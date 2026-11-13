@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>躲猫猫 · 画面样板</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=ZCOOL+KuaiLe&display=swap">
+<style>
+:root{--ink:#3a3550;--cream:#fff8ea;--yellow:#ffc94a;--mint:#a8f0e0}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#bfe6ff;color:var(--ink);font-family:"Baloo 2","PingFang SC","Microsoft YaHei",system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#gl:active{cursor:grabbing}
+#vig{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 46%,rgba(0,0,0,0) 58%,rgba(46,30,60,.2) 100%)}
+.card{background:rgba(255,248,234,.94);border:3px solid var(--ink);border-radius:18px;box-shadow:0 5px 0 rgba(58,53,80,.28)}
+#top{position:fixed;top:14px;left:14px;padding:8px 16px 10px;max-width:330px}
+#top h1{font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-weight:400;font-size:24px;margin:0;line-height:1.2}
+#top p{margin:2px 0 0;font-size:13px;font-weight:600;line-height:1.45;opacity:.85}
+#fps{position:fixed;top:14px;right:16px;font-size:13px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.5)}
+#bar{position:fixed;left:12px;right:12px;margin:0 auto;width:fit-content;bottom:16px;display:flex;gap:14px;align-items:center;padding:10px 16px;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 24px)}
+#bar.hide,#top.hide{display:none}
+.grp{display:flex;gap:6px;align-items:center}
+.grp>span{font-size:13px;font-weight:800;margin-right:2px;white-space:nowrap}
+button{font:inherit;font-weight:800;font-size:14px;color:var(--ink);background:#fff;border:2.5px solid var(--ink);border-bottom-width:4.5px;border-radius:12px;padding:2px 11px;cursor:pointer;white-space:nowrap}
+button.on{background:var(--yellow)}
+button:active{transform:translateY(2px);border-bottom-width:2.5px}
+input[type=range]{width:150px;accent-color:#3fb8a6}
+#visNum{font-size:15px;font-weight:800;width:42px;text-align:right;font-variant-numeric:tabular-nums}
+#visWord{font-size:13px;font-weight:800;width:74px}
+.sep{width:2.5px;height:26px;background:rgba(58,53,80,.2);border-radius:2px}
+#loading{position:fixed;inset:0;display:grid;place-items:center;background:#bfe6ff;font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-size:30px;z-index:5}
+@media (max-width:760px){#top p{display:none}.sep{display:none}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vig"></div>
+<div id="loading">正在画贴图…</div>
+<div id="top" class="card"><h1>画面样板：客厅</h1><p>按住鼠标拖动转视角，W A S D 走动，E / Q 升降。贴图、模型、光照全部由代码生成，没有用外部素材。</p></div>
+<div id="fps"></div>
+<div id="bar" class="card">
+  <div class="grp"><span>机位</span><button data-view="0">全景</button><button data-view="1">果冻</button><button data-view="2">门口</button><button data-view="3">猎人</button></div>
+  <div class="sep"></div>
+  <div class="grp"><span>可见度</span><input id="vis" type="range" min="15" max="100" value="100"><b id="visNum">100%</b><b id="visWord">完全显形</b><button id="auto" class="on">自动</button></div>
+  <div class="sep"></div>
+  <div class="grp"><span>姿态</span><button data-st="1" class="on">站</button><button data-st="0.55">蹲</button><button data-st="0.27">趴</button></div>
+  <div class="sep"></div>
+  <button id="fx" class="on">后期效果：开</button>
+</div>
+<script>/*__JS__*/</script>
+</body>
+</html>

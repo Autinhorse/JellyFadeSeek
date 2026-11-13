@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>躲猫猫原型</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=ZCOOL+KuaiLe&display=swap">
+<style>
+:root{--ink:#3a3550;--cream:#fff8ea;--coral:#ff7a6b;--yellow:#ffc94a;--mint:#a8f0e0;--teal:#5fc9c0;--orange:#ff8a3d;--sky:#6ba8ff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#bfe6ff;color:var(--ink);font-family:"Baloo 2","ZCOOL KuaiLe","PingFang SC","Microsoft YaHei",system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+.title{font-family:"ZCOOL KuaiLe","Baloo 2","PingFang SC","Microsoft YaHei",sans-serif}
+#hud{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .3s}
+#hud.show{opacity:1}
+.card{background:var(--cream);border:3px solid var(--ink);border-radius:18px;box-shadow:0 5px 0 rgba(58,53,80,.28)}
+#top{position:absolute;top:16px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center}
+#timer{font-size:30px;font-weight:800;padding:2px 20px;min-width:110px;text-align:center;font-variant-numeric:tabular-nums}
+#timer.hide{background:var(--yellow)}
+#scoreBox{padding:2px 16px;font-size:22px;font-weight:800;display:flex;gap:6px;align-items:baseline}
+#scoreBox small{font-size:13px;font-weight:600;opacity:.7}
+#pills{display:flex;gap:8px}
+.pill{display:flex;align-items:center;gap:6px;padding:3px 12px 3px 8px;background:var(--cream);border:3px solid var(--ink);border-radius:999px;font-size:20px;font-weight:800;box-shadow:0 4px 0 rgba(58,53,80,.28);transition:transform .15s}
+.pill i{width:20px;height:24px;border-radius:50% 50% 50% 50%/62% 62% 38% 38%;border:2.5px solid var(--ink);display:block;transform:rotate(180deg)}
+.pill.alert{transform:scale(1.15);background:#ffe1dc}
+.pill.empty{opacity:.45}
+#radarWrap{position:absolute;top:14px;right:14px;filter:drop-shadow(0 5px 0 rgba(58,53,80,.28))}
+#radar{display:block;border-radius:50%}
+#bottom{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:10px 20px 10px 14px}
+#stanceBox{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:74px}
+#stance{width:50px;height:50px;border-radius:16px;background:var(--mint);border:3px solid var(--ink);display:grid;place-items:center;font-size:27px;line-height:1}
+#stanceTip{font-size:12px;font-weight:600;opacity:.75;white-space:nowrap}
+#visBox{display:flex;flex-direction:column;align-items:center;width:190px}
+#eye{width:96px;height:60px;margin:-6px 0 -4px}
+#visBar{width:100%;height:14px;border-radius:999px;border:3px solid var(--ink);background:#fff;overflow:hidden}
+#visFill{height:100%;width:100%;background:var(--coral);border-radius:999px;transition:background .2s}
+#visLabel{font-size:14px;font-weight:800;margin-top:2px}
+#noiseBox{width:60px;display:flex;flex-direction:column;align-items:center;gap:2px}
+#noiseRing{width:48px;height:48px;display:grid;place-items:center}
+#noise{width:44px;height:44px;border-radius:50%;border:4px dashed var(--ink);transition:transform .15s,opacity .15s;opacity:.35;transform:scale(.25)}
+#noiseBox span{font-size:12px;font-weight:600;opacity:.75}
+#mirror{position:absolute;border:6px solid var(--cream);outline:3px solid var(--ink);border-radius:14px;box-shadow:0 6px 0 rgba(58,53,80,.28)}
+#mirror span{position:absolute;left:50%;top:-15px;transform:translateX(-50%);white-space:nowrap;background:var(--ink);color:#fff;font-size:12px;font-weight:600;padding:1px 10px;border-radius:999px}
+#toasts{position:absolute;left:50%;top:24%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px}
+.toast{background:var(--cream);border:3px solid var(--ink);border-radius:999px;padding:3px 18px;font-size:18px;font-weight:800;box-shadow:0 4px 0 rgba(58,53,80,.28);animation:pop .35s cubic-bezier(.3,1.6,.5,1);transition:opacity .4s,transform .4s}
+.toast.good{background:#d8f7c8}.toast.warn{background:#ffd9c2}.toast.info{background:#e3f1ff;font-size:15px}
+.toast.out{opacity:0;transform:translateY(-12px)}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+#banner{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%) scale(.6);text-align:center;opacity:0;transition:opacity .3s,transform .4s cubic-bezier(.3,1.6,.5,1)}
+#banner.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+#banner .big{font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-size:64px;color:#fff;-webkit-text-stroke:10px var(--ink);paint-order:stroke fill;text-shadow:0 7px 0 rgba(58,53,80,.35);line-height:1.1}
+#banner .sub{font-size:22px;font-weight:800;color:#fff;-webkit-text-stroke:6px var(--ink);paint-order:stroke fill;margin-top:6px}
+#flash{position:fixed;inset:0;pointer-events:none;opacity:0}
+#flash.on{animation:flash .9s ease-out}
+@keyframes flash{0%{opacity:1}100%{opacity:0}}
+#hud.danger #bottom{animation:shake .35s infinite}
+body:not(.hunter) .honly{display:none!important}
+body.hunter #radarWrap,body.hunter #mirror,body.hunter #bottom,body.hunter #pills,body.hunter #scoreBox{display:none}
+#cross{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;border:3.5px solid #fff;border-radius:50%;box-shadow:0 0 0 2.5px var(--ink),inset 0 0 0 2.5px var(--ink)}
+#cross::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px;border-radius:50%;background:var(--ink)}
+#myPill{font-size:22px}
+#blind{position:fixed;inset:0;display:none;place-items:center;background:var(--yellow);text-align:center}
+#blind.show{display:grid}
+#blind b{display:block;font-size:150px;line-height:1;font-weight:800}
+#blind span{font-size:26px;font-weight:800}
+#hint{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);padding:6px 18px;font-size:15px;font-weight:600;white-space:nowrap}
+.btns{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.btn.alt{background:#fff;font-size:24px;padding:6px 28px}
+@keyframes shake{0%,100%{margin-left:0}50%{margin-left:3px}}
+#splat{position:fixed;inset:0;pointer-events:none;display:none;overflow:hidden}
+#splat.on{display:block}
+#splat i{position:absolute;transform:translate(-50%,-50%) scale(0);animation:splat .35s cubic-bezier(.3,1.5,.5,1) forwards;opacity:.93}
+@keyframes splat{to{transform:translate(-50%,-50%) scale(1)}}
+.screen{position:fixed;inset:0;display:none;place-items:center;background:rgba(191,230,255,.35);backdrop-filter:blur(3px);padding:20px;overflow:auto}
+.screen.show{display:grid}
+.panel{padding:26px 34px 28px;max-width:660px;width:100%;text-align:center;border-radius:28px}
+.panel h1{font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-size:58px;margin:0 0 2px;font-weight:400;letter-spacing:2px;line-height:1.15}
+.panel h1 em{font-style:normal;color:var(--teal);opacity:.55}
+.panel p{margin:6px 0 14px;font-size:17px;font-weight:600;line-height:1.55;text-wrap:pretty}
+.keys{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;text-align:left;margin:16px 0 20px;font-size:15px;font-weight:600}
+.keys div{display:flex;align-items:center;gap:8px}
+kbd{font-family:inherit;font-weight:800;background:#fff;border:2.5px solid var(--ink);border-bottom-width:5px;border-radius:9px;padding:0 8px;min-width:30px;text-align:center;font-size:14px;white-space:nowrap}
+.btn{pointer-events:auto;font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-size:30px;color:var(--ink);background:var(--yellow);border:3px solid var(--ink);border-radius:999px;padding:6px 46px;cursor:pointer;box-shadow:0 6px 0 var(--ink);transition:transform .08s,box-shadow .08s}
+.btn:hover{transform:translateY(-2px);box-shadow:0 8px 0 var(--ink)}
+.btn:active{transform:translateY(4px);box-shadow:0 2px 0 var(--ink)}
+.tips{display:flex;gap:10px;margin:14px 0 4px;text-align:left}
+.tips div{flex:1;background:#fff;border:2.5px solid var(--ink);border-radius:16px;padding:8px 12px;font-size:14px;font-weight:600;line-height:1.45}
+.tips b{display:block;font-size:16px;color:#e2604f}
+#end .panel{max-width:520px}
+#end.win h1{color:#2f9e8f}
+#endScore{font-size:74px;font-weight:800;line-height:1;margin:6px 0 0}
+#endStats{margin:14px 0 20px;text-align:left;font-size:16px;font-weight:600}
+#endStats .row{display:flex;justify-content:space-between;gap:16px;padding:5px 2px;border-bottom:2px dashed rgba(58,53,80,.2)}
+#endStats b{font-weight:800;text-align:right}
+#pause{cursor:pointer}
+#pause .panel{max-width:400px}
+#debug{position:fixed;left:10px;top:10px;bottom:10px;width:330px;overflow:auto;display:none;background:rgba(255,248,234,.96);border:3px solid var(--ink);border-radius:16px;padding:10px 12px;font-size:13px;font-weight:600;z-index:20;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+#debug.show{display:block}
+.dh{display:flex;justify-content:space-between;font-size:15px;margin-bottom:6px}
+.di{white-space:pre-wrap;font-size:12px;background:#fff;border-radius:8px;padding:6px 8px;margin:6px 0;font-variant-numeric:tabular-nums}
+.dr{display:grid;grid-template-columns:1fr 96px 38px;align-items:center;gap:6px;padding:2px 0}
+.dr input[type=range]{width:100%}.dr input[type=checkbox]{justify-self:end;grid-column:2/4;width:18px;height:18px}
+.dr em{font-style:normal;text-align:right;font-variant-numeric:tabular-nums}
+@media (max-height:640px){.panel h1{font-size:40px}.tips{display:none}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">
+  <div id="top"><div id="pills"></div><div id="myPill" class="pill honly"><i style="background:#ff8a3d"></i><b id="myAmmo">10</b></div><div id="timer" class="card">3:00</div><div id="scoreBox" class="card"><span id="score">0</span><small>分</small></div></div>
+  <div id="radarWrap"><canvas id="radar"></canvas></div>
+  <div id="mirror"><span>猎人眼中的你</span></div>
+  <div id="bottom" class="card">
+    <div id="stanceBox"><div id="stance" class="title">站</div><div id="stanceTip">悄悄走</div></div>
+    <div id="visBox"><canvas id="eye"></canvas><div id="visBar"><div id="visFill"></div></div><div id="visLabel">完全显形</div></div>
+    <div id="noiseBox"><div id="noiseRing"><div id="noise"></div></div><span>噪音</span></div>
+  </div>
+  <div id="cross" class="honly"></div>
+  <div id="hint" class="card honly">找出躲起来的小家伙并喷中它 · 点击鼠标或按 <kbd>F</kbd> 发射 · <kbd>Shift</kbd> 跑</div>
+  <div id="toasts"></div>
+  <div id="banner"></div>
+</div>
+<div id="blind" class="title"><div><span>闭上眼睛数数…</span><b id="blindNum">10</b><span>小家伙正在找地方躲</span></div></div>
+<div id="flash"></div>
+<div id="splat"></div>
+<div id="menu" class="screen show">
+  <div class="panel card">
+    <h1>躲<em>猫</em>猫</h1>
+    <p>停下不动，你会慢慢变透明；一动就现形。<br>看小地图上猎人的视线，挑准时机换地方，撑过 3 分钟。</p>
+    <div class="tips">
+      <div><b>猎人比你快</b>被看到就跑不掉，要挡住视线再停下来。</div>
+      <div><b>颜料只有 10 发</b>被喷中就输。骗他们把颜料打光也算赢。</div>
+      <div><b>别一直不动</b>待太久，猎人会收到提示找过来。</div>
+    </div>
+    <div class="keys">
+      <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动（悄悄走）</div><div><kbd>鼠标</kbd> 转动视角</div>
+      <div><kbd>Shift</kbd> 跑（很吵，完全现形）</div><div><kbd>C</kbd> 蹲下 / 站起</div>
+      <div><kbd>Z</kbd> 匍匐 / 站起（能钻床底）</div><div><kbd>`</kbd> 调试面板 <kbd>M</kbd> 静音</div>
+    </div>
+    <div class="btns"><button id="startBtn" class="btn">当躲藏方</button><button id="hunterBtn" class="btn alt">当猎人（看 AI 躲）</button></div>
+  </div>
+</div>
+<div id="end" class="screen">
+  <div class="panel card">
+    <h1 id="endTitle">被喷中啦！</h1>
+    <p id="endSub"></p>
+    <div id="endScore">0</div><div id="endUnit" style="font-weight:800">分</div>
+    <div id="endStats"></div>
+    <div class="btns"><button id="againBtn" class="btn">再来一局</button><button id="menuBtn" class="btn alt">换个身份</button></div>
+  </div>
+</div>
+<div id="pause" class="screen"><div class="panel card"><h1 style="font-size:40px">暂停中</h1><p>点击画面继续</p></div></div>
+<div id="debug"></div>
+<div id="fps2" style="position:fixed;right:10px;bottom:8px;font-size:13px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;z-index:30"></div>
+<script>/*__JS__*/</script>
+</body>
+</html>
