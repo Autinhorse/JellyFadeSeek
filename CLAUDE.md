@@ -16,12 +16,12 @@
 ```
 npm install
 npm run build        # 生成 dist/index.html（游戏）和 dist/slice/index.html（画面样板）
-npm test             # 逻辑测试，test/logic.mjs 应有 16 个 PASS
+npm test             # 逻辑测试，test/logic.mjs 应有 29 个 PASS，test/bot.mjs 4 个
 ```
 
 - 构建产物是**单个自包含 HTML**：esbuild 把 `src/main.js` 打成 IIFE，替换进 `src/index.html` 里的 `/*__JS__*/`。双击就能玩。
 - `prototype/game.html`、`prototype/slice.html` 是交接时已经构建好的版本，可以直接打开对照。
-- `test/shot.mjs` 是无头浏览器截图脚本，里面的 playwright 和 Chrome 路径是之前 Linux 环境的，在本机要改路径才能用。页面带 `#test` 时会暴露 `window.__t`（`frame(n)`、`step(n, inp)`、`game`、`view`、`start(mode)` 等）方便脚本驱动。
+- `test/shot.mjs` 是无头浏览器截图脚本，playwright 和 Chrome 的路径用环境变量 `PW`、`CHROME` 指定（见文件开头）。页面带 `#test` 时会暴露 `window.__t`（`frame(n)`、`step(n, inp)`、`game`、`view`、`me()`、`lineup`、`start(阵容或 'hider'/'hunter')` 等）方便脚本驱动。
 
 ## 结构上必须保持的几件事
 

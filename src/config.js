@@ -3,7 +3,8 @@ export const CONFIG = {
   // —— 一局 ——
   roundTime: 180,
   hideTime: 20,
-  hunterCount: 2,
+  hideTimeBots: 10,     // 躲藏方全是 AI 时的躲藏时间（AI 躲得快）
+  hunterCount: 2,       // 当躲藏方练习时默认的猎人数
 
   // —— 躲藏方姿态 ——  speed 米/秒, visTarget 移动时可见度目标, rise 每秒上升, noise 噪音半径, eye 视线高度, height 身体高度
   stances: {
@@ -55,6 +56,7 @@ export const CONFIG = {
   radarRadius: 25,
   radarBlurWhenRunning: true,
   radarRangeLimit: true,
+  radarShowTeammates: false, // 小地图上显示其他躲藏方（默认不显示，保持“不知道队友在哪”）
 
   // —— 防挂机 ——
   campTime: 45,
@@ -105,6 +107,7 @@ export const DEBUG_ITEMS = [
   ['campTime', '防挂机时间(秒)', 10, 120, 5],
   ['radarBlurWhenRunning', '跑动时小地图模糊', null],
   ['radarRangeLimit', '小地图距离限制', null],
+  ['radarShowTeammates', '小地图显示队友', null],
   ['debugCones', '显示猎人视野/发现值', null],
   ['invincible', '无敌（颜料打不中）', null],
 ];

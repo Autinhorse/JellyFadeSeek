@@ -12,6 +12,7 @@ import { CONFIG as C } from './config.js';
 import { buildTextures } from './slice/tex.js';
 import { Builder } from './props.js';
 import { makeJelly, makeHunter } from './slice/chars.js';
+import { HUNTER_COLORS, MAX_HIDERS, MAX_HUNTERS } from './sim.js';
 
 const tmpC = new THREE.Color();
 const OUT = 0.022; // 轮廓线粗细（米）
@@ -63,7 +64,9 @@ export class View {
     this.quadScene = new THREE.Scene(); this.quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: this.mirrorRT.texture, depthTest: false, depthWrite: false })));
     this.toon = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: GRADIENT });
     this.outlineMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
-    this.buildSky(); this.buildLights(); this.buildStatic(); this.buildHunters(); this.buildPlayerBody(); this.buildFx(); this.buildPost();
+    this.buildSky(); this.buildLights(); this.buildStatic(); this.buildHunters(); this.buildJellies(); this.buildFx(); this.buildCampMark();
+    this.local = null; this.spec = null; // 本机控制的角色；旁观时的自由相机 {x, y, z, yaw, pitch, moving}
+    this.buildPost();
     this.eyeY = 1.6; this.bob = 0; this.time = 0; this.buildFpGun();
   }
   buildSky() {
@@ -111,7 +114,7 @@ export class View {
     const gtao = this.gtao = new GTAOPass(this.scene, this.camera, 4, 4); gtao.updateGtaoMaterial({ radius: 0.42, distanceExponent: 1.4, thickness: 1.4, scale: 1.25, samples: 12, screenSpaceRadius: false }); gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 }); c.addPass(gtao);
     // 光束、玻璃、标记、半透明的身体不参与环境遮蔽
     const ov = gtao._overrideVisibility.bind(gtao), rs = gtao._restoreVisibility.bind(gtao); let mine = [];
-    gtao._overrideVisibility = () => { ov(); mine = this.noAO.filter((o) => o.visible); if (this.bodyVis < 0.6 && this.pbody.visible) mine.push(this.pbody); for (const o of mine) o.visible = false; }; gtao._restoreVisibility = () => { rs(); for (const o of mine) o.visible = true; mine = []; };
+    gtao._overrideVisibility = () => { ov(); mine = this.noAO.filter((o) => o.visible); for (const j of this.jellies) if (j.visible && j.dispVis < 0.6) mine.push(j); for (const o of mine) o.visible = false; }; gtao._restoreVisibility = () => { rs(); for (const o of mine) o.visible = true; mine = []; };
     c.addPass(new UnrealBloomPass(new THREE.Vector2(4, 4), 0.13, 0.7, 0.95)); c.addPass(new OutputPass()); c.addPass(new SMAAPass());
   }
   addLoose(p) { // 会轻轻摆动的布（晾衣绳上的床单）
@@ -122,8 +125,8 @@ export class View {
   // —— 猎人 ——
   buildHunters() {
     this.hunterViews = [];
-    for (let i = 0; i < Math.max(2, this.game.hunters.length); i++) {
-      const color = [0xff8a3d, 0xc46bff][i % 2], g = makeHunter(color); this.scene.add(g);
+    for (let i = 0; i < MAX_HUNTERS; i++) {
+      const color = HUNTER_COLORS[i % HUNTER_COLORS.length], g = makeHunter(color); g.visible = false; this.scene.add(g);
       // 头顶的 ? / ! 标记
       const cv = document.createElement('canvas'); cv.width = cv.height = 128; const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
       const mark = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, toneMapped: false })); mark.scale.setScalar(0.62); mark.renderOrder = 10; this.scene.add(mark);
@@ -133,7 +136,7 @@ export class View {
     }
   }
   drawMark(v, h) {
-    const key = h.state === 'chase' ? '!' : h.state === 'empty' ? 'e' : h.state === 'wait' ? 'z' : h.detect > 0.03 ? '?' + Math.round(h.detect * 12) : (h.state === 'investigate' || h.state === 'search') ? 's' : '';
+    const key = h.state === 'human' ? '' : h.state === 'chase' ? '!' : h.state === 'empty' ? 'e' : h.state === 'wait' ? 'z' : h.detect > 0.03 ? '?' + Math.round(h.detect * 12) : (h.state === 'investigate' || h.state === 'search') ? 's' : '';
     if (key === v.markKey) return; v.markKey = key; const x = v.cv.getContext('2d'); x.clearRect(0, 0, 128, 128); v.mark.visible = key !== '';
     if (!key) { v.tex.needsUpdate = true; return; }
     const ch = key[0] === '?' || key === 's' ? '?' : key === '!' ? '!' : key === 'z' ? 'z' : '…';
@@ -143,10 +146,11 @@ export class View {
   }
   updateHunters(dt) {
     const game = this.game;
-    this.hunterViews.forEach((v, i) => { v.g.visible = i < game.hunters.length; if (!v.g.visible) { v.cone.visible = false; v.mark.visible = false; } });
+    const L = this.local, mine = L && L.kind === 'hunter' && !this.spec ? L.id : -1; // 第一人称时不画自己
+    this.hunterViews.forEach((v, i) => { v.g.visible = i < game.hunters.length && i !== mine; if (!v.g.visible) { v.cone.visible = false; v.mark.visible = false; } });
     game.hunters.forEach((h, i) => {
-      const v = this.hunterViews[i]; v.g.position.set(h.x, 0, h.z); v.g.rotation.y = Math.PI / 2 - h.ang; v.recoil = Math.max(0, v.recoil - dt * 5);
-      v.g.update(dt, 0, { moving: h.speed > 0, phase: h.hop, run: h.state === 'chase', bend: !!h.bend, aim: h.state === 'chase', wait: h.state === 'wait', empty: h.state === 'empty', ammo: h.ammo / C.ammo, recoil: v.recoil });
+      const v = this.hunterViews[i]; if (i === mine) return; v.g.position.set(h.x, 0, h.z); v.g.rotation.y = Math.PI / 2 - h.ang; v.recoil = Math.max(0, v.recoil - dt * 5);
+      v.g.update(dt, 0, { moving: h.speed > 0, phase: h.hop, run: h.state === 'chase' || (h.running && h.moving), bend: !!h.bend, aim: h.state === 'chase' || h.state === 'human', wait: h.state === 'wait', empty: h.state === 'empty', ammo: h.ammo / C.ammo, recoil: v.recoil });
       this.drawMark(v, h); v.mark.position.set(h.x, h.bend ? 1.75 : 2.05, h.z);
       // 调试视野锥
       v.cone.visible = C.debugCones && h.state !== 'wait';
@@ -154,13 +158,32 @@ export class View {
     });
   }
 
-  // —— 躲藏方的身体（自己看不到，只在“猎人眼中的你”小窗里出现）——
-  buildPlayerBody() { const g = this.pbody = makeJelly(); g.setLayer(1); this.scene.add(g); this.bodyH = 1.7; }
-  updatePlayerBody(dt) {
-    const p = this.game.player, h = this.game.height(); this.bodyH += (h - this.bodyH) * Math.min(1, dt * 10);
-    const caught = this.game.phase === 'over' && (this.game.result === 'caught' || this.game.result === 'found'), vis = caught ? 1 : p.vis; this.bodyVis = vis;
-    this.pbody.position.set(p.x, p.floorY, p.z); this.pbody.rotation.y = p.yaw + Math.PI; this.pbody.update(dt, vis, h / 0.95, p.moving && !caught);
+  // —— 躲藏方的身体：每个躲藏方一个果冻。自己的只在“猎人眼中的你”小窗里出现（图层 1）——
+  buildJellies() {
+    this.jellies = [];
+    for (let i = 0; i < MAX_HIDERS; i++) { const g = makeJelly(); g.visible = false; g.layer = 0; g.bodyH = 1.7; g.dispVis = 1; g.paintKey = null; this.scene.add(g); this.jellies.push(g); }
   }
+  updateJellies(dt) {
+    const game = this.game, L = this.local, cam = this.camera.position;
+    this.jellies.forEach((g, i) => { if (i >= game.hiders.length) g.visible = false; });
+    for (const q of game.hiders) {
+      const g = this.jellies[q.id], h = game.height(q), own = L === q && !q.caught && !this.spec; g.visible = true;
+      const layer = own ? 1 : 0; if (g.layer !== layer) { g.layer = layer; g.setLayer(layer); }
+      const paint = q.caught ? q.caughtColor : null; if (g.paintKey !== paint) { g.paintKey = paint; g.setPaint(paint); }
+      g.bodyH += (h - g.bodyH) * Math.min(1, dt * 10);
+      // 猎人走到近处一定能看出轮廓（真人猎人的画面也照这条规则）
+      let vis = q.caught ? 1 : q.vis;
+      if (L && L.kind === 'hunter' && !this.spec && Math.hypot(cam.x - q.x, cam.z - q.z) < C.closeRevealDist) vis = Math.max(vis, C.closeRevealVis);
+      g.dispVis = vis; g.position.set(q.x, q.floorY, q.z); g.rotation.y = q.yaw + Math.PI; g.update(dt, vis, h / 0.95, q.moving && !q.caught);
+    }
+  }
+
+  // —— 防挂机提示圈（只有真人猎人看得到）——
+  buildCampMark() {
+    const m = this.campRing = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 64), new THREE.MeshBasicMaterial({ color: 0xff7a6b, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+    m.rotation.x = -Math.PI / 2; m.visible = false; m.renderOrder = 5; this.scene.add(m); this.noAO.push(m); this.campT = 0;
+  }
+  campMark(x, z, r) { this.campRing.position.set(x, 0.035, z); this.campRing.scale.setScalar(r); this.campRing.visible = true; this.campT = 10; }
 
   // —— 颜料弹和颜料溅点 ——
   buildFx() {
@@ -193,9 +216,8 @@ export class View {
     if (this.splats.length > 70) { const old = this.splats.shift(); this.splatGroup.remove(old); old.traverse((o) => o.geometry && o.geometry.dispose()); }
   }
   clearSplats() { for (const s of this.splats) { this.splatGroup.remove(s); s.traverse((o) => o.geometry && o.geometry.dispose()); } this.splats = []; }
-  paintPlayer(color) { this.pbody.setPaint(color); }
-  resetRound() { this.clearSplats(); this.pbody.setPaint(null); }
-  recoil(id) { if (id < 0) this.fpRecoil = 1; else this.hunterViews[id].recoil = 1; }
+  resetRound() { this.clearSplats(); this.campRing.visible = false; this.campT = 0; }
+  recoil(id) { const L = this.local; if (L && L.kind === 'hunter' && L.id === id) this.fpRecoil = 1; else if (this.hunterViews[id]) this.hunterViews[id].recoil = 1; }
 
   // 当猎人时手里的喷色枪
   buildFpGun() {
@@ -217,27 +239,27 @@ export class View {
   mirrorRect() { const s = Math.round(Math.min(190, this.h * 0.24)); return { x: 22, y: 22, s }; }
 
   render(dt, showMirror) {
-    const game = this.game, p = game.player; this.time += dt;
-    // 第一人称相机
-    const hm = game.mode === 'hunter' && game.me, cp = hm ? game.me : p; // 当猎人时相机跟着自己这个猎人
-    const eye = hm ? C.hunterEye : C.stances[p.stance].eye; this.eyeY += (eye - this.eyeY) * Math.min(1, dt * 9);
-    if (cp.moving) this.bob += dt * (cp.running ? 13 : !hm && p.stance === 'prone' ? 5 : 8.5);
-    const bobY = cp.moving ? Math.sin(this.bob) * (cp.running ? 0.045 : 0.022) : 0;
-    this.camera.position.set(cp.x, (hm ? 0 : p.floorY) + this.eyeY + bobY, cp.z); this.camera.rotation.set(cp.pitch, cp.yaw, cp.moving ? Math.sin(this.bob * 0.5) * 0.006 : 0);
-    if (hm) this.camera.layers.enable(1); else this.camera.layers.disable(1);
-    this.fpGun.visible = !!hm && game.phase !== 'menu';
-    if (hm) { this.fpRecoil = Math.max(0, this.fpRecoil - dt * 4.5); this.fpGun.position.set(0.23 + (cp.moving ? Math.sin(this.bob * 0.5) * 0.008 : 0), -0.2 + (cp.moving ? Math.abs(Math.sin(this.bob * 0.5)) * 0.012 : 0), -0.5 + this.fpRecoil * 0.09); this.fpGun.rotation.x = this.fpRecoil * 0.35; this.fpTank.scale.setScalar(Math.max(0.05, Math.cbrt(game.me.ammo / C.ammo))); }
+    const game = this.game, p = this.local, spec = this.spec; this.time += dt;
+    // 第一人称相机：跟着本机控制的角色；旁观时是自由相机
+    const hm = !spec && p.kind === 'hunter', cp = spec || p;
+    const eye = spec ? spec.y : hm ? C.hunterEye : C.stances[p.stance].eye; this.eyeY = spec ? eye : this.eyeY + (eye - this.eyeY) * Math.min(1, dt * 9);
+    if (cp.moving) this.bob += dt * (cp.running ? 13 : !hm && !spec && p.stance === 'prone' ? 5 : 8.5);
+    const bobY = cp.moving && !spec ? Math.sin(this.bob) * (cp.running ? 0.045 : 0.022) : 0;
+    this.camera.position.set(cp.x, (hm || spec ? 0 : p.floorY) + this.eyeY + bobY, cp.z); this.camera.rotation.set(cp.pitch, cp.yaw, cp.moving && !spec ? Math.sin(this.bob * 0.5) * 0.006 : 0);
+    this.fpGun.visible = hm && game.phase !== 'menu';
+    if (hm) { this.fpRecoil = Math.max(0, this.fpRecoil - dt * 4.5); this.fpGun.position.set(0.23 + (cp.moving ? Math.sin(this.bob * 0.5) * 0.008 : 0), -0.2 + (cp.moving ? Math.abs(Math.sin(this.bob * 0.5)) * 0.012 : 0), -0.5 + this.fpRecoil * 0.09); this.fpGun.rotation.x = this.fpRecoil * 0.35; this.fpTank.scale.setScalar(Math.max(0.05, Math.cbrt(p.ammo / C.ammo))); }
     const fov = 74 + (cp.running && cp.moving ? 5 : 0); if (Math.abs(this.camera.fov - fov) > 0.05) { this.camera.fov += (fov - this.camera.fov) * Math.min(1, dt * 6); this.camera.updateProjectionMatrix(); }
-    this.updateHunters(dt); this.updatePlayerBody(dt); this.syncShots();
+    this.updateHunters(dt); this.updateJellies(dt); this.syncShots();
+    if (this.campT > 0) { this.campT -= dt; this.campRing.visible = hm && this.campT > 0; this.campRing.material.opacity = 0.9 * Math.min(1, this.campT / 2) * (0.75 + 0.25 * Math.sin(this.time * 5)); }
     for (const s of this.swayers) { const a = Math.sin(this.time * 1.4 + s.ph) * 0.035; if (s.axisX) s.piv.rotation.x = a; else s.piv.rotation.z = a; }
     for (const s of this.splats) if (s.userData.t < 1) { s.userData.t = Math.min(1, s.userData.t + dt * 7); const t = s.userData.t; s.scale.setScalar(0.1 + 0.9 * (1 - Math.pow(1 - t, 3)) * (1 + 0.15 * Math.sin(t * 3.14))); }
     this.particles = this.particles.filter((q) => { q.life -= dt; q.v.y -= 9 * dt; q.m.position.addScaledVector(q.v, dt); q.m.scale.setScalar(q.s * Math.max(0.05, Math.min(1, q.life * 3))); if (q.life <= 0 || q.m.position.y < 0) { this.scene.remove(q.m); q.m.material.dispose(); return false; } return true; });
     this.clouds.position.x = Math.sin(this.time * 0.01) * 30;
     const r = this.renderer; r.setScissorTest(false); r.setViewport(0, 0, this.w, this.h);
-    this.pbody.userData.noAOnow = hm && p.vis < 0.6; if (this.fx) this.composer.render(dt); else { r.clear(); r.render(this.scene, this.camera); }
-    if (showMirror && !hm) {
+    if (this.fx) this.composer.render(dt); else { r.clear(); r.render(this.scene, this.camera); }
+    if (showMirror && !hm && !spec && !p.caught) {
       // “猎人眼中的你”：从正前方看自己
-      const m = this.mirrorRect(), H = this.bodyH, fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
+      const m = this.mirrorRect(), H = this.jellies[p.id].bodyH, fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
       const cy = p.floorY + Math.max(0.35, H * 0.55), want = 1.9 + H * 0.9, ang = Math.atan2(fz, fx);
       const d = Math.max(0.5, Math.min(want, game.rayDist(p.x, cy + 0.15, p.z, ang, want + 0.3) - 0.25));
       this.mirrorCam.position.set(p.x + fx * d, Math.min(cy + 0.5, H < 0.6 ? 0.42 : 9), p.z + fz * d); this.mirrorCam.lookAt(p.x, cy, p.z);

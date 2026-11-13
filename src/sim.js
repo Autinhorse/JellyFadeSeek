@@ -98,8 +98,9 @@ export class Nav {
     return out;
   }
 }
-
-export const HUNTER_COLORS = [0xff8a3d, 0xc46bff];
+// 猎人的颜料颜色，按编号轮流用
+export const HUNTER_COLORS = [0xff8a3d, 0xc46bff, 0x3fb6ff, 0xff5f9e];
+export const MAX_HIDERS = 6, MAX_HUNTERS = 3;
 // AI 躲藏方会用的藏身点。st: 到位后的姿态；ax/az: 钻进去之前先走到的位置
 const HIDE_SPOTS = [
   { x: 11, z: 15.25, st: 'crouch' }, { x: 18, z: 15.95, st: 'crouch' }, { x: 11, z: 14.4, st: 'prone', ax: 11, az: 13.4 }, { x: 9.4, z: 17.4, st: 'walk' },
@@ -111,6 +112,18 @@ const HIDE_SPOTS = [
   { x: 3.1, z: 9.3, st: 'crouch' }, { x: 16, z: 2.4, st: 'crouch' }, { x: 27.9, z: 23.2, st: 'walk' }, { x: 24.7, z: 26.1, st: 'crouch' },
 ];
 
+// 视线方向角（世界 xz 平面，atan2(dz, dx)）和第一人称 yaw 的换算
+export const angOfYaw = (yaw) => Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
+
+// 一局的阵容。role 是本机真人的身份（'hider' / 'hunter' / 'none'），真人总在各自队伍的 0 号位
+export function lineup(role, hunters, hiders) {
+  hunters = clamp(hunters | 0, 1, MAX_HUNTERS); hiders = clamp(hiders | 0, 1, MAX_HIDERS);
+  return {
+    hiders: Array.from({ length: hiders }, (_, i) => ({ ctrl: role === 'hider' && i === 0 ? 'human' : 'ai' })),
+    hunters: Array.from({ length: hunters }, (_, i) => ({ ctrl: role === 'hunter' && i === 0 ? 'human' : 'ai' })),
+  };
+}
+
 export class Game {
   constructor(world, rng = Math.random) {
     this.world = world; this.rng = rng; this.nav = new Nav(world);
@@ -119,29 +132,61 @@ export class Game {
     this.paintBoxes = world.boxes.filter((b) => b.occlude || b.solid);
     // 真人当猎人时用的碰撞体：矮窗台对猎人是墙
     this.hunterSolids = world.boxes.filter((b) => b.solid || b.hunterBlock).map((b) => (b.map === 'vault' && b.y1 < 1 ? { ...b, y1: 2 } : b));
-    this.mode = 'hider';
     this.hideSpots = HIDE_SPOTS.filter((q) => !this.collides(q.x, q.z, C.stances[q.st].height));
+    // 躲藏方出生点：在地图出生点周围散开，避开家具
+    const s = world.spawn; this.hiderSpawns = [];
+    for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1], [2, 0], [-2, 0], [0, 2], [0, -2]]) {
+      const x = s.x + dx * 0.9, z = s.z + dz * 0.9; if (!this.collides(x, z, C.stances.walk.height)) this.hiderSpawns.push({ x, z });
+    }
+    this.setup = lineup('hider', C.hunterCount, 1);
     this.events = []; this.reset();
   }
   emit(type, data = {}) { this.events.push({ type, ...data }); }
-  reset() {
-    const w = this.world;
-    this.phase = 'menu'; this.time = 0; this.hideLeft = C.hideTime; this.timeLeft = C.roundTime; this.result = null;
-    this.score = 0; this.stats = { moved: 0, brushes: 0, escapes: 0, spotted: 0, closest: 99, closestVis: 1, coneTime: 0, shotsDodged: 0 };
-    this.player = { x: w.spawn.x, z: w.spawn.z, yaw: w.spawn.yaw, pitch: 0, stance: 'walk', running: false, moving: false, vis: 1, still: 0, noise: 0, vx: 0, vz: 0, floorY: 0, noiseT: 0 };
-    this.hunters = [];
-    for (let i = 0; i < (this.mode === 'hunter' ? 0 : C.hunterCount); i++) {
-      const s = w.hunterSpawns[i % w.hunterSpawns.length];
-      this.hunters.push({ id: i, x: s.x + (i >= w.hunterSpawns.length ? 1 : 0), z: s.z, ang: -Math.PI / 2, state: 'wait', detect: 0, ammo: C.ammo, cd: 0, path: null, timer: 0, repath: 0, lost: 0, lastSeen: null, aim: 0, color: HUNTER_COLORS[i % 2], probes: C.probeShots, chased: false, still: true, frac: 0, inCone: false, brushArmed: false, brushCd: 0, pi: i === 0 ? 8 : 0, dir: i === 0 ? 1 : -1, look: 0, lookBase: 0, speed: 0, hop: 0, dist: 99 });
-    }
-    this.shots = []; this.pendingPaintOut = false;
-    if (this.mode === 'hunter') { this.hideLeft = 10; this.me = { x: 20, z: 28.4, yaw: 0, pitch: 0, ammo: C.ammo, cd: 0, moving: false, running: false, fired: 0 }; this.bot = { state: 'go', spot: null, path: null, wait: 0, freeze: 0, freezeCd: 0, flee: false, stuck: 0, lx: 0, lz: 0 }; this.botPick(false); } this.camp = { x: this.player.x, z: this.player.z, t: 0 };
+
+  // —— 开局 ——
+  newHider(i, s) {
+    const w = this.world, sp = this.hiderSpawns[i % this.hiderSpawns.length];
+    return {
+      id: i, key: 'h' + i, kind: 'hider', ctrl: s.ctrl, name: s.name || '',
+      x: sp.x, z: sp.z, yaw: w.spawn.yaw, pitch: 0, stance: 'walk', running: false, moving: false, vis: 1, still: 0, noise: 0, vx: 0, vz: 0, floorY: 0, noiseT: 0,
+      caught: false, caughtColor: null, score: 0,
+      stats: { moved: 0, brushes: 0, escapes: 0, spotted: 0, closest: 99, closestVis: 1, coneTime: 0, shotsDodged: 0, survived: 0 },
+      camp: { x: sp.x, z: sp.z, t: 0, level: 0 },
+      bot: s.ctrl === 'ai' ? { state: 'go', spot: null, path: null, wait: 0, freeze: 0, freezeCd: 0, flee: false, stuck: 0, lx: 0, lz: 0, seen: false } : null,
+    };
   }
-  start(mode) { if (mode) this.mode = mode; this.reset(); this.phase = 'hide'; this.emit('start'); }
+  newHunter(i, s, nHiders) {
+    const sp = this.world.hunterSpawns[i % this.world.hunterSpawns.length], x = sp.x, z = sp.z - 1.1 * Math.floor(i / this.world.hunterSpawns.length);
+    return {
+      id: i, key: 'k' + i, kind: 'hunter', ctrl: s.ctrl, name: s.name || '', color: HUNTER_COLORS[i % HUNTER_COLORS.length],
+      x, z, ang: -Math.PI / 2, yaw: 0, pitch: 0, state: 'wait', ammo: C.ammo, cd: 0, fired: 0, moving: false, running: false,
+      // 对每个躲藏方：发现值、视线比例、距离、擦肩而过的状态
+      det: new Array(nHiders).fill(0), frac: new Array(nHiders).fill(0), dd: new Array(nHiders).fill(99), brush: Array.from({ length: nHiders }, () => ({ armed: false, cd: 0 })),
+      detect: 0, target: -1, chasedId: -1, dist: 99,
+      path: null, timer: 0, repath: 0, lost: 0, lastSeen: null, aim: 0, probes: C.probeShots, still: true, bend: false,
+      pi: [8, 0][i] ?? (i * 5) % this.world.patrol.length, dir: i % 2 === 0 ? 1 : -1, look: 0, lookBase: 0, speed: 0, hop: 0,
+    };
+  }
+  reset() {
+    this.phase = 'menu'; this.time = 0; this.timeLeft = C.roundTime; this.result = null; this.why = null;
+    this.hiders = this.setup.hiders.map((s, i) => this.newHider(i, s));
+    this.hunters = this.setup.hunters.map((s, i) => this.newHunter(i, s, this.hiders.length));
+    this.hideLeft = this.hiders.some((q) => q.ctrl === 'human') ? C.hideTime : C.hideTimeBots;
+    this.shots = []; this.pendingPaintOut = false;
+    for (const q of this.hiders) if (q.bot) this.botPick(q, false);
+  }
+  // setup：lineup() 的结果；也接受 'hider' / 'hunter'，等于原来的两种单机模式
+  start(setup) {
+    if (setup === 'hider') setup = lineup('hider', C.hunterCount, 1); else if (setup === 'hunter') setup = lineup('hunter', 1, 1);
+    if (setup) this.setup = setup; this.reset(); this.phase = 'hide'; this.emit('start');
+  }
+  actor(key) { return key[0] === 'h' ? this.hiders[+key.slice(1)] : this.hunters[+key.slice(1)]; }
+  firstHuman() { return this.hiders.find((q) => q.ctrl === 'human') || this.hunters.find((h) => h.ctrl === 'human') || null; }
+  alive() { return this.hiders.filter((q) => !q.caught); }
 
   // —— 躲藏方 ——
-  stanceCfg() { const p = this.player; return C.stances[p.stance === 'walk' && p.running && p.moving ? 'run' : p.stance]; }
-  height(st = this.player.stance) { return C.stances[st].height; }
+  stanceCfg(q) { return C.stances[q.stance === 'walk' && q.running && q.moving ? 'run' : q.stance]; }
+  height(q) { return C.stances[q.stance].height; }
   floorAt(x, z) { let h = 0; for (const s of this.world.steps) if (x > s.x0 && x < s.x1 && z > s.z0 && z < s.z1) h = Math.max(h, s.h); return h; }
   collides(x, z, height, r = C.playerRadius) {
     for (const b of this.solids) {
@@ -164,98 +209,130 @@ export class Game {
     }
     return [clamp(x, 0.4, this.world.size.x - 0.4), clamp(z, 0.4, this.world.size.z - 0.4)];
   }
-  setStance(target) { // 'crouch' / 'prone' 是切换键；再按一次回到站立
-    const p = this.player; const next = p.stance === target ? 'walk' : target;
-    if (C.stances[next].height > C.stances[p.stance].height && this.collides(p.x, p.z, C.stances[next].height, C.playerRadius - 0.02)) { if (!this._quiet) this.emit('bump'); return false; }
-    p.stance = next; p.vis = Math.min(1, p.vis + C.stancePenalty); p.still = Math.min(p.still, C.fadeDelay * 0.5); if (!this._quiet) this.emit('stance', { stance: next }); return true;
+  setStance(q, target) { // 'crouch' / 'prone' 是切换键；再按一次回到站立
+    const next = q.stance === target ? 'walk' : target, human = q.ctrl === 'human';
+    if (C.stances[next].height > C.stances[q.stance].height && this.collides(q.x, q.z, C.stances[next].height, C.playerRadius - 0.02)) { if (human) this.emit('bump', { hid: q.id }); return false; }
+    q.stance = next; q.vis = Math.min(1, q.vis + C.stancePenalty); q.still = Math.min(q.still, C.fadeDelay * 0.5); if (human) this.emit('stance', { hid: q.id, stance: next }); return true;
   }
-  updatePlayer(dt, inp) {
-    const p = this.player; p.yaw = inp.yaw; p.pitch = inp.pitch || 0; p.running = !!inp.run && p.stance === 'walk';
+  // 躲藏方的移动和可见度：只依赖自己的输入，联机时本机预测也用这一段
+  stepHider(q, dt, inp) {
+    if (inp.stance) { if (inp.stance === 'stand') { if (q.stance !== 'walk') this.setStance(q, q.stance); } else this.setStance(q, inp.stance); }
+    q.yaw = inp.yaw ?? q.yaw; q.pitch = inp.pitch || 0; q.running = !!inp.run && q.stance === 'walk';
     let f = inp.f || 0, s = inp.s || 0; const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
-    const want = len > 0.05; const cfg = C.stances[p.stance === 'walk' && p.running && want ? 'run' : p.stance];
-    const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw), rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
-    const ox = p.x, oz = p.z;
-    if (want) { const [nx, nz] = this.resolve(p.x + (fx * f + rx * s) * cfg.speed * dt, p.z + (fz * f + rz * s) * cfg.speed * dt, C.stances[p.stance].height); p.x = nx; p.z = nz; }
-    const moved = Math.hypot(p.x - ox, p.z - oz); p.vx = (p.x - ox) / dt; p.vz = (p.z - oz) / dt;
-    p.moving = moved > cfg.speed * dt * 0.2 && want; p.floorY = lerp(p.floorY, this.floorAt(p.x, p.z), Math.min(1, dt * 12));
-    this.stats.moved += moved;
-    // 可见度
-    if (p.moving) {
-      p.still = 0; const tgt = cfg.visTarget;
-      if (p.vis < tgt) p.vis = Math.min(tgt, p.vis + cfg.rise * dt); else p.vis = Math.max(tgt, p.vis - (1 - C.visFloor) / C.fadeTime * 0.6 * dt);
-      p.noise = cfg.noise;
+    const want = len > 0.05; const cfg = C.stances[q.stance === 'walk' && q.running && want ? 'run' : q.stance];
+    const fx = -Math.sin(q.yaw), fz = -Math.cos(q.yaw), rx = Math.cos(q.yaw), rz = -Math.sin(q.yaw);
+    const ox = q.x, oz = q.z;
+    if (want) { const [nx, nz] = this.resolve(q.x + (fx * f + rx * s) * cfg.speed * dt, q.z + (fz * f + rz * s) * cfg.speed * dt, C.stances[q.stance].height); q.x = nx; q.z = nz; }
+    const moved = Math.hypot(q.x - ox, q.z - oz); q.vx = (q.x - ox) / dt; q.vz = (q.z - oz) / dt;
+    q.moving = moved > cfg.speed * dt * 0.2 && want; q.floorY = lerp(q.floorY, this.floorAt(q.x, q.z), Math.min(1, dt * 12));
+    q.stats.moved += moved;
+    if (q.moving) {
+      q.still = 0; const tgt = cfg.visTarget;
+      if (q.vis < tgt) q.vis = Math.min(tgt, q.vis + cfg.rise * dt); else q.vis = Math.max(tgt, q.vis - (1 - C.visFloor) / C.fadeTime * 0.6 * dt);
+      q.noise = cfg.noise;
     } else {
-      p.still += dt; p.noise = 0;
-      if (p.still > C.fadeDelay && p.vis > C.visFloor) {
-        const span = 1 - C.visFloor, u = (p.vis - C.visFloor) / span; // 先快后慢，总时长 = fadeTime
-        p.vis = Math.max(C.visFloor, p.vis - span / C.fadeTime * 1.155 * (0.4 + 1.2 * u) * dt);
+      q.still += dt; q.noise = 0;
+      if (q.still > C.fadeDelay && q.vis > C.visFloor) {
+        const span = 1 - C.visFloor, u = (q.vis - C.visFloor) / span; // 先快后慢，总时长 = fadeTime
+        q.vis = Math.max(C.visFloor, q.vis - span / C.fadeTime * 1.155 * (0.4 + 1.2 * u) * dt);
       }
     }
-    // 噪音
-    p.noiseT -= dt;
-    if (p.noise > 0 && p.noiseT <= 0 && this.phase === 'seek') {
-      p.noiseT = 0.4;
+  }
+  updateHider(q, dt, inp) {
+    this.stepHider(q, dt, inp);
+    // 噪音：附近的 AI 猎人会过来查看
+    q.noiseT -= dt;
+    if (q.noise > 0 && q.noiseT <= 0 && this.phase === 'seek') {
+      q.noiseT = 0.4;
       for (const h of this.hunters) {
-        if (h.state !== 'patrol' && h.state !== 'investigate' && h.state !== 'search') continue;
-        const d = Math.hypot(h.x - p.x, h.z - p.z); const blockedBy = this.los(h.x, 1.2, h.z, p.x, 1.2, p.z) ? 1 : 0.55;
-        if (d < p.noise * blockedBy) { const a = this.rng() * TAU, r = this.rng() * C.noiseError * Math.min(1, d / 6); this.investigate(h, p.x + Math.cos(a) * r, p.z + Math.sin(a) * r, 'noise'); }
+        if (h.ctrl !== 'ai' || (h.state !== 'patrol' && h.state !== 'investigate' && h.state !== 'search')) continue;
+        const d = Math.hypot(h.x - q.x, h.z - q.z); const blockedBy = this.los(h.x, 1.2, h.z, q.x, 1.2, q.z) ? 1 : 0.55;
+        if (d < q.noise * blockedBy) { const a = this.rng() * TAU, r = this.rng() * C.noiseError * Math.min(1, d / 6); this.investigate(h, q.x + Math.cos(a) * r, q.z + Math.sin(a) * r, 'noise', q.id); }
       }
     }
   }
 
   // —— 视线 ——
   los(ax, ay, az, bx, by, bz) { for (const b of this.occluders) if (segBox(ax, ay, az, bx, by, bz, b)) return false; return true; }
-  bodyPoints() { const p = this.player, h = this.height(), y = p.floorY; return [[p.x, y + h - 0.08, p.z], [p.x, y + h * 0.5, p.z], [p.x, y + 0.08, p.z]]; }
+  bodyPoints(q) { const h = this.height(q), y = q.floorY; return [[q.x, y + h - 0.08, q.z], [q.x, y + h * 0.5, q.z], [q.x, y + 0.08, q.z]]; }
   // 水平方向的射线距离（小地图视野锥用）
   rayDist(x, y, z, ang, max) {
     const ex = x + Math.cos(ang) * max, ez = z + Math.sin(ang) * max; let t = 1;
     for (const b of this.occluders) { if (b.y0 > y || b.y1 < y) continue; const r = segBox(x, y, z, ex, y, ez, b); if (r && r.t < t) t = r.t; }
     return t * max;
   }
+  // 猎人对每个躲藏方：距离、能看到身体的比例（0..1）
+  sense(h) {
+    const seek = this.phase === 'seek', fov = (C.fovDeg * Math.PI / 180) * (h.state === 'chase' ? 0.75 : 0.5); h.dist = 99;
+    for (const q of this.hiders) {
+      if (q.caught) { h.frac[q.id] = 0; h.dd[q.id] = 99; continue; }
+      const dx = q.x - h.x, dz = q.z - h.z, d = Math.hypot(dx, dz); h.dd[q.id] = d; if (d < h.dist) h.dist = d;
+      const inCone = d < C.viewDist && Math.abs(angDiff(Math.atan2(dz, dx), h.ang)) < fov;
+      let frac = 0;
+      if (seek && h.state !== 'wait' && (inCone || d < 1.0)) { const eye = h.bend ? 0.55 : C.hunterEye; for (const p of this.bodyPoints(q)) if (this.los(h.x, eye, h.z, p[0], p[1], p[2])) frac++; frac /= 3; }
+      h.frac[q.id] = frac;
+    }
+  }
+  // 计分：在猎人眼皮底下没被发现、擦肩而过（真人和 AI 猎人都算）
+  scoreNear(h, dt) {
+    for (const q of this.hiders) {
+      const b = h.brush[q.id]; b.cd -= dt;
+      if (q.caught) { b.armed = false; continue; }
+      const d = h.dd[q.id], frac = h.frac[q.id], onMe = h.state === 'chase' && h.target === q.id;
+      if (d < q.stats.closest && !onMe) { q.stats.closest = d; q.stats.closestVis = q.vis; }
+      if (onMe || h.state === 'empty') { b.armed = false; continue; }
+      if (frac > 0 && d < C.scoreInConeDist) { this.addScore(q, C.scoreInCone * dt); q.stats.coneTime += dt; }
+      if (d < C.brushDist && b.cd <= 0) b.armed = true;
+      if (b.armed && d > C.brushDist + 1.5) { b.armed = false; b.cd = 6; q.stats.brushes++; this.addScore(q, C.scoreBrush, '擦肩而过'); this.emit('brush', { id: h.id, hid: q.id }); }
+    }
+  }
 
-  // —— 猎人 ——
+  // —— AI 猎人 ——
   goTo(h, x, z) { h.path = this.nav.path(h.x, h.z, x, z); h.repath = 0.3; return !!h.path; }
-  investigate(h, x, z, why) { if (h.state === 'chase' || h.state === 'wait' || h.state === 'empty') return; h.state = 'investigate'; h.thorough = why === 'camp'; h.timer = C.investigateLookTime; h.arrived = false; this.goTo(h, x, z); this.emit('investigate', { id: h.id, why }); }
+  investigate(h, x, z, why, hid = -1) { if (h.state === 'chase' || h.state === 'wait' || h.state === 'empty') return; h.state = 'investigate'; h.thorough = why === 'camp'; h.timer = C.investigateLookTime; h.arrived = false; this.goTo(h, x, z); this.emit('investigate', { id: h.id, why, hid }); }
   nextPatrol(h) { const n = this.world.patrol.length; h.pi = (h.pi + h.dir + n) % n; const t = this.world.patrol[h.pi]; h.state = 'patrol'; h.arrived = false; h.timer = C.lookAroundTime; if (!this.goTo(h, t.x, t.z)) h.path = []; }
+  shoot(h, ox, oy, oz, vx, vy, vz, probe) {
+    h.ammo--; h.fired++;
+    this.shots.push({ x: ox, y: oy, z: oz, vx, vy, vz, color: h.color, owner: h.id, life: 4, near: [] });
+    this.emit('fire', { id: h.id, x: ox, y: oy, z: oz, probe: !!probe, ammo: h.ammo });
+    if (this.hunters.every((k) => k.ammo <= 0)) this.pendingPaintOut = true;
+  }
   fire(h, tx, ty, tz, probe) {
-    if (h.ammo <= 0) return; h.ammo--; h.cd = C.fireCooldown;
+    if (h.ammo <= 0) return; h.cd = C.fireCooldown;
     const ox = h.x + Math.cos(h.ang) * 0.45, oz = h.z + Math.sin(h.ang) * 0.45, oy = h.bend ? 0.45 : 1.05;
     const dx = tx - ox, dz = tz - oz, d = Math.max(0.5, Math.hypot(dx, dz)), t = d / C.paintSpeed;
-    this.shots.push({ x: ox, y: oy, z: oz, vx: dx / d * C.paintSpeed, vz: dz / d * C.paintSpeed, vy: (ty - oy) / t + 0.5 * C.paintGravity * t, color: h.color, owner: h.id, life: 4, near: false });
-    this.emit('fire', { id: h.id, x: ox, y: oy, z: oz, probe: !!probe, ammo: h.ammo });
-    if (this.hunters.every((q) => q.ammo <= 0)) this.pendingPaintOut = true;
+    this.shoot(h, ox, oy, oz, dx / d * C.paintSpeed, (ty - oy) / t + 0.5 * C.paintGravity * t, dz / d * C.paintSpeed, probe);
   }
   updateHunter(h, dt) {
-    const p = this.player, seek = this.phase === 'seek'; h.cd -= dt; h.brushCd -= dt;
-    const dx = p.x - h.x, dz = p.z - h.z, d = Math.hypot(dx, dz); h.dist = d;
-    const toP = Math.atan2(dz, dx), fov = (C.fovDeg * Math.PI / 180) * (h.state === 'chase' ? 0.75 : 0.5);
-    h.inCone = d < C.viewDist && Math.abs(angDiff(toP, h.ang)) < fov;
-    let frac = 0;
-    if (seek && h.state !== 'wait' && (h.inCone || d < 1.0)) { const eye = h.bend ? 0.55 : C.hunterEye; for (const q of this.bodyPoints()) if (this.los(h.x, eye, h.z, q[0], q[1], q[2])) frac++; frac /= 3; }
-    h.frac = frac;
+    const seek = this.phase === 'seek'; h.cd -= dt;
+    this.sense(h);
     if (!seek || h.state === 'wait') { h.speed = 0; h.hop += dt * 2; return; }
     // 发现值
-    if (frac > 0 && h.state !== 'empty') {
-      const v = Math.max(p.vis, d < (h.bend ? C.closeRevealDist * 2 : C.closeRevealDist) ? C.closeRevealVis : 0), eff = Math.pow(v, C.visPower || 2);
-      const df = d <= 3 ? 1 : lerp(1, 0.2, clamp((d - 3) / (C.viewDist - 3), 0, 1));
-      h.detect = Math.min(1, h.detect + eff * df * C.detectGain * (h.still ? C.stillLookBonus : 1) * (0.4 + 0.6 * frac) * dt);
-    } else h.detect = Math.max(0, h.detect - C.detectDecay * dt);
-    // 统计与计分
-    if (d < this.stats.closest && h.state !== 'chase') { this.stats.closest = d; this.stats.closestVis = p.vis; }
-    if (h.state !== 'chase' && h.state !== 'empty') {
-      if (frac > 0 && d < C.scoreInConeDist) { this.addScore(C.scoreInCone * dt); this.stats.coneTime += dt; h.coneNow = true; } else h.coneNow = false;
-      if (d < C.brushDist && h.brushCd <= 0) h.brushArmed = true;
-      if (h.brushArmed && d > C.brushDist + 1.5) { h.brushArmed = false; h.brushCd = 6; this.stats.brushes++; this.addScore(C.scoreBrush, '擦肩而过'); this.emit('brush', { id: h.id }); }
-    } else { h.brushArmed = false; h.coneNow = false; }
-
-    if (h.state !== 'chase' && h.state !== 'empty' && h.detect >= 1) { h.state = 'chase'; h.aim = 0; h.lost = 0; h.chased = true; h.lastSeen = { x: p.x, z: p.z }; h.repath = 0; this.stats.spotted++; this.emit('spotted', { id: h.id }); }
+    for (const q of this.hiders) {
+      const i = q.id, frac = h.frac[i], d = h.dd[i];
+      if (q.caught) { h.det[i] = 0; continue; }
+      if (frac > 0 && h.state !== 'empty') {
+        const v = Math.max(q.vis, d < (h.bend ? C.closeRevealDist * 2 : C.closeRevealDist) ? C.closeRevealVis : 0), eff = Math.pow(v, C.visPower || 2);
+        const df = d <= 3 ? 1 : lerp(1, 0.2, clamp((d - 3) / (C.viewDist - 3), 0, 1));
+        h.det[i] = Math.min(1, h.det[i] + eff * df * C.detectGain * (h.still ? C.stillLookBonus : 1) * (0.4 + 0.6 * frac) * dt);
+      } else h.det[i] = Math.max(0, h.det[i] - C.detectDecay * dt);
+    }
+    this.scoreNear(h, dt);
+    let top = -1; for (const q of this.hiders) if (!q.caught && (top < 0 || h.det[q.id] > h.det[top])) top = q.id;
+    h.detect = top >= 0 ? h.det[top] : 0;
+    if (h.state !== 'chase' && h.state !== 'empty' && h.detect >= 1) {
+      const q = this.hiders[top]; h.state = 'chase'; h.target = top; h.aim = 0; h.lost = 0; h.chasedId = top; h.lastSeen = { x: q.x, z: q.z }; h.repath = 0; q.stats.spotted++; this.emit('spotted', { id: h.id, hid: top });
+    }
+    // 追的目标已经被别人喷中：回去巡逻
+    if (h.state === 'chase' && this.hiders[h.target].caught) { h.target = -1; h.chasedId = -1; this.nextPatrol(h); }
 
     let speed = 0, face = null;
     if (h.state === 'chase') {
+      const p = this.hiders[h.target], d = h.dd[p.id], frac = h.frac[p.id], toP = Math.atan2(p.z - h.z, p.x - h.x);
       const contact = frac > 0 && (p.vis > 0.3 || d < C.closeRevealDist + 1);
       h.bend = p.stance === 'prone' && d < 6; // 目标趴着时，猎人蹲下来瞄
-      if (contact) { h.lastSeen = { x: p.x, z: p.z }; h.lost = 0; h.detect = 1; face = toP; }
-      else { h.lost += dt; if (h.lost >= C.loseSightTime) { h.state = 'search'; h.timer = C.searchTime; h.arrived = false; h.look = 0; this.goTo(h, h.lastSeen.x, h.lastSeen.z); this.emit('lost', { id: h.id }); } }
+      if (contact) { h.lastSeen = { x: p.x, z: p.z }; h.lost = 0; h.det[p.id] = h.detect = 1; face = toP; }
+      else { h.lost += dt; if (h.lost >= C.loseSightTime) { h.state = 'search'; h.timer = C.searchTime; h.arrived = false; h.look = 0; this.goTo(h, h.lastSeen.x, h.lastSeen.z); this.emit('lost', { id: h.id, hid: p.id }); } }
       if (h.state === 'chase') {
         h.repath -= dt; if (h.repath <= 0) this.goTo(h, h.lastSeen.x, h.lastSeen.z);
         speed = contact && d < 3.2 ? 0 : C.hunterChaseSpeed;
@@ -263,7 +340,7 @@ export class Game {
           h.aim += dt;
           if (h.aim >= C.aimDelay && h.cd <= 0 && Math.abs(angDiff(toP, h.ang)) < 0.35) {
             const t = d / C.paintSpeed, a = this.rng() * TAU, r = Math.sqrt(this.rng()) * C.aimError * clamp(d / 6, 0.5, 1.6);
-            this.fire(h, p.x + p.vx * t * 0.85 + Math.cos(a) * r, p.floorY + this.height() * 0.55 + (this.rng() - 0.5) * 0.3, p.z + p.vz * t * 0.85 + Math.sin(a) * r);
+            this.fire(h, p.x + p.vx * t * 0.85 + Math.cos(a) * r, p.floorY + this.height(p) * 0.55 + (this.rng() - 0.5) * 0.3, p.z + p.vz * t * 0.85 + Math.sin(a) * r);
           }
         } else h.aim = 0;
         if (h.ammo <= 0) { h.state = 'empty'; h.path = null; this.emit('empty', { id: h.id }); }
@@ -281,7 +358,11 @@ export class Game {
           for (let k = 0; k < 6; k++) { const a = this.rng() * TAU, r = 1.5 + this.rng() * (C.searchRadius - 1.5); const tx = h.lastSeen.x + Math.cos(a) * r, tz = h.lastSeen.z + Math.sin(a) * r; if (tx > 1 && tz > 1 && tx < 39 && tz < 29 && this.nav.isFree(tx, tz) && this.goTo(h, tx, tz)) break; }
         }
       } else h.lookBase = h.ang;
-      if (h.timer <= 0) { if (h.chased) { h.chased = false; this.stats.escapes++; this.addScore(C.scoreEscape, '甩掉猎人'); this.emit('escaped', { id: h.id }); } this.nextPatrol(h); }
+      if (h.timer <= 0) {
+        const q = this.hiders[h.chasedId];
+        if (q && !q.caught) { q.stats.escapes++; this.addScore(q, C.scoreEscape, '甩掉猎人'); this.emit('escaped', { id: h.id, hid: q.id }); }
+        h.chasedId = -1; h.target = -1; this.nextPatrol(h);
+      }
     } else if (h.state === 'investigate' || h.state === 'patrol') {
       speed = C.hunterPatrolSpeed * (h.state === 'investigate' ? 1.2 : 1);
       if (!h.path || !h.path.length) {
@@ -303,25 +384,51 @@ export class Game {
       }
       h.still = false; h.hop += dt * speed * 2.2;
     }
-    h.speed = h.still ? 0 : speed;
+    h.speed = h.still ? 0 : speed; h.moving = !h.still;
     if (face !== null) h.ang += clamp(angDiff(face, h.ang), -7 * dt, 7 * dt);
   }
-  addScore(v, label) { this.score += v; if (label) this.emit('score', { v, label }); }
+  addScore(q, v, label) { q.score += v; if (label) this.emit('score', { hid: q.id, v, label }); }
+
+  // —— 真人猎人 ——
+  // 移动：只依赖自己的输入，联机时本机预测也用这一段
+  stepHunter(h, dt, inp) {
+    h.yaw = inp.yaw ?? h.yaw; h.pitch = inp.pitch || 0; h.ang = angOfYaw(h.yaw);
+    if (this.phase !== 'seek') { h.moving = false; h.speed = 0; return; }
+    let f = inp.f || 0, s = inp.s || 0; const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
+    h.running = !!inp.run; const sp = h.running ? C.hunterChaseSpeed : C.hunterPatrolSpeed, ox = h.x, oz = h.z;
+    const fx = -Math.sin(h.yaw), fz = -Math.cos(h.yaw), rx = Math.cos(h.yaw), rz = -Math.sin(h.yaw);
+    if (len > 0.05) { const [nx, nz] = this.resolve(h.x + (fx * f + rx * s) * sp * dt, h.z + (fz * f + rz * s) * sp * dt, 1.6, 0.35, this.hunterSolids); h.x = nx; h.z = nz; }
+    h.moving = Math.hypot(h.x - ox, h.z - oz) > sp * dt * 0.2; h.speed = h.moving ? sp : 0; h.hop += dt * h.speed * 2.2;
+  }
+  updateHumanHunter(h, dt, inp) {
+    h.cd -= dt; this.stepHunter(h, dt, inp);
+    if (this.phase !== 'seek') return;
+    if (h.state === 'wait') h.state = 'human';
+    this.sense(h); this.scoreNear(h, dt);
+    if (inp.fire && h.cd <= 0 && h.ammo > 0) {
+      h.cd = C.fireCooldown * 0.6; const fx = -Math.sin(h.yaw), fz = -Math.cos(h.yaw), rx = Math.cos(h.yaw), rz = -Math.sin(h.yaw);
+      const cp = Math.cos(h.pitch), dx = fx * cp, dy = Math.sin(h.pitch), dz = fz * cp;
+      this.shoot(h, h.x + dx * 0.4 + rx * 0.18, C.hunterEye - 0.16 + dy * 0.4, h.z + dz * 0.4 + rz * 0.18, dx * C.paintSpeed, dy * C.paintSpeed + 0.6, dz * C.paintSpeed);
+      if (h.ammo <= 0) { h.state = 'empty'; this.emit('empty', { id: h.id }); }
+    }
+  }
 
   // —— 颜料弹 ——
   updateShots(dt) {
-    const p = this.player, ph = this.height();
     for (const s of this.shots) {
       let left = dt;
       while (left > 0 && !s.dead) {
         const st = Math.min(left, 1 / 240); left -= st;
         const nx = s.x + s.vx * st, ny = s.y + s.vy * st, nz = s.z + s.vz * st; s.vy -= C.paintGravity * st;
         // 命中躲藏方？
-        const pd = Math.hypot(nx - p.x, nz - p.z);
-        if (pd < 1.2) s.near = true;
-        if (pd < C.playerRadius + 0.14 && ny > p.floorY - 0.05 && ny < p.floorY + ph + 0.12 && this.phase === 'seek' && !C.invincible) {
-          s.dead = true; this.emit('splat', { x: nx, y: ny, z: nz, nx: 0, ny: 1, nz: 0, color: s.color, onPlayer: true }); this.caught(s); break;
+        let hit = null;
+        for (const q of this.hiders) {
+          if (q.caught) continue;
+          const pd = Math.hypot(nx - q.x, nz - q.z);
+          if (pd < 1.2 && !s.near.includes(q.id)) s.near.push(q.id);
+          if (pd < C.playerRadius + 0.14 && ny > q.floorY - 0.05 && ny < q.floorY + this.height(q) + 0.12 && this.phase === 'seek' && !C.invincible) { hit = q; break; }
         }
+        if (hit) { s.dead = true; this.emit('splat', { x: nx, y: ny, z: nz, nx: 0, ny: 1, nz: 0, color: s.color, onBody: true, hid: hit.id }); this.caught(hit, s); break; }
         let best = null;
         for (const b of this.paintBoxes) { const r = segBox(s.x, s.y, s.z, nx, ny, nz, b); if (r && r.axis >= 0 && (!best || r.t < best.t)) best = r; }
         if (best) {
@@ -331,88 +438,102 @@ export class Game {
         s.x = nx; s.y = ny; s.z = nz;
       }
       s.life -= dt; if (s.life <= 0 || s.x < -5 || s.z < -5 || s.x > 45 || s.z > 35) s.dead = true;
-      if (s.dead && s.near && this.phase === 'seek') { this.stats.shotsDodged++; this.emit('dodged'); }
+      if (s.dead && this.phase === 'seek') for (const id of s.near) { const q = this.hiders[id]; if (!q.caught) { q.stats.shotsDodged++; this.emit('dodged', { hid: id }); } }
     }
     this.shots = this.shots.filter((s) => !s.dead);
   }
-  caught(s) { this.phase = 'over'; this.result = this.mode === 'hunter' ? 'found' : 'caught'; this.caughtColor = s.color; this.player.vis = 1; this.emit('caught', { color: s.color, id: s.owner }); }
-  lose(why) { this.phase = 'over'; this.result = why; this.emit('hunterLose', { why }); }
-
-  // —— 真人当猎人 ——
-  updateMe(dt, inp) {
-    const m = this.me; m.yaw = inp.yaw; m.pitch = inp.pitch || 0; m.cd -= dt;
-    if (this.phase !== 'seek') { m.moving = false; return; }
-    let f = inp.f || 0, s = inp.s || 0; const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
-    m.running = !!inp.run; const sp = m.running ? C.hunterChaseSpeed : C.hunterPatrolSpeed, ox = m.x, oz = m.z;
-    const fx = -Math.sin(m.yaw), fz = -Math.cos(m.yaw), rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw);
-    if (len > 0.05) { const [nx, nz] = this.resolve(m.x + (fx * f + rx * s) * sp * dt, m.z + (fz * f + rz * s) * sp * dt, 1.6, 0.35, this.hunterSolids); m.x = nx; m.z = nz; }
-    m.moving = Math.hypot(m.x - ox, m.z - oz) > sp * dt * 0.2;
-    if (inp.fire && m.cd <= 0 && m.ammo > 0) {
-      m.ammo--; m.cd = C.fireCooldown * 0.6; m.fired++; const cp = Math.cos(m.pitch), dx = fx * cp, dy = Math.sin(m.pitch), dz = fz * cp;
-      const ox2 = m.x + dx * 0.4 + rx * 0.18, oy = C.hunterEye - 0.16 + dy * 0.4, oz2 = m.z + dz * 0.4 + rz * 0.18;
-      this.shots.push({ x: ox2, y: oy, z: oz2, vx: dx * C.paintSpeed, vy: dy * C.paintSpeed + 0.6, vz: dz * C.paintSpeed, color: HUNTER_COLORS[0], owner: -1, life: 4, near: false });
-      this.emit('fire', { id: -1, x: ox2, y: oy, z: oz2, ammo: m.ammo });
-    }
+  caught(q, s) {
+    q.caught = true; q.caughtColor = s.color; q.vis = 1; q.moving = false; q.noise = 0; q.stats.survived = C.roundTime - this.timeLeft;
+    for (const h of this.hunters) h.det[q.id] = 0;
+    this.emit('caught', { hid: q.id, id: s.owner, color: s.color });
+    if (this.hiders.every((k) => k.caught)) this.end('hunters', 'allCaught');
   }
-  // —— AI 躲藏方（只在“当猎人”模式用）：找地方躲、定时换位置、被看到会僵住或逃跑 ——
-  botPick(away) {
-    const b = this.bot, p = this.player, m = this.me; let best = null, bs = -1e9;
-    for (const q of this.hideSpots) {
-      if (q === b.spot) continue; const dp = Math.hypot(q.x - p.x, q.z - p.z), dm = Math.hypot(q.x - m.x, q.z - m.z);
+  end(winner, why) {
+    this.phase = 'over'; this.result = winner; this.why = why;
+    if (winner === 'hiders') for (const q of this.alive()) { q.stats.survived = C.roundTime - Math.max(0, this.timeLeft); this.addScore(q, C.scoreSurvive); }
+    this.emit('over', { winner, why });
+  }
+
+  // —— AI 躲藏方：找地方躲、定时换位置、被看到会僵住或逃跑 ——
+  nearestHunter(x, z) { let best = null, bd = 1e9; for (const h of this.hunters) { const d = Math.hypot(h.x - x, h.z - z); if (d < bd) { bd = d; best = h; } } return [best, bd]; }
+  botPick(q, away) {
+    const b = q.bot; let best = null, bs = -1e9;
+    const taken = this.hiders.filter((k) => k !== q && k.bot && !k.caught).map((k) => k.bot.spot);
+    for (const s of this.hideSpots) {
+      if (s === b.spot || taken.includes(s)) continue; const dp = Math.hypot(s.x - q.x, s.z - q.z), dm = this.nearestHunter(s.x, s.z)[1];
       let sc = this.rng() * 8 - dp * (away ? 0.15 : 0.25) + Math.min(dm, 14) * (away ? 0.9 : 0.3);
-      if (this.phase === 'seek' && this.los(m.x, C.hunterEye, m.z, q.x, 0.6, q.z)) sc -= 6;
-      if (sc > bs) { bs = sc; best = q; }
+      if (this.phase === 'seek' && this.hunters.some((h) => this.los(h.x, C.hunterEye, h.z, s.x, 0.6, s.z))) sc -= 6;
+      if (sc > bs) { bs = sc; best = s; }
     }
     b.spot = best; b.state = 'go'; b.flee = away; b.stuck = 0;
-    const tx = best.ax ?? best.x, tz = best.az ?? best.z; b.path = this.nav.path(p.x, p.z, tx, tz) || [];
+    const tx = best.ax ?? best.x, tz = best.az ?? best.z; b.path = this.nav.path(q.x, q.z, tx, tz) || [];
     if (best.ax !== undefined || !this.nav.isFree(best.x, best.z)) b.path.push({ x: best.x, z: best.z, last: true }); else if (b.path.length) b.path[b.path.length - 1].last = true;
   }
-  botStance(t) { const p = this.player; this._quiet = true; if (p.stance !== t) this.setStance(t === 'walk' ? p.stance : t); this._quiet = false; }
-  botInput(dt) {
-    const b = this.bot, p = this.player, m = this.me, seek = this.phase === 'seek'; b.freezeCd -= dt;
-    const dx = p.x - m.x, dz = p.z - m.z, d = Math.hypot(dx, dz), mAng = Math.atan2(-Math.cos(m.yaw), -Math.sin(m.yaw));
-    const seen = seek && d < 26 && Math.abs(angDiff(Math.atan2(dz, dx), mAng)) < 0.95 && this.los(m.x, C.hunterEye, m.z, p.x, p.floorY + this.height() * 0.6, p.z);
+  botStance(q, t) { if (q.stance !== t) this.setStance(q, t === 'walk' ? q.stance : t); }
+  botInput(q, dt) {
+    const b = q.bot, seek = this.phase === 'seek'; b.freezeCd -= dt;
+    // 离得最近的猎人，以及有没有猎人正看着自己
+    let d = this.nearestHunter(q.x, q.z)[1], seen = false;
+    if (seek) for (const h of this.hunters) {
+      if (h.state === 'wait') continue; const dx = q.x - h.x, dz = q.z - h.z, dh = Math.hypot(dx, dz);
+      if (dh < 26 && Math.abs(angDiff(Math.atan2(dz, dx), h.ang)) < 0.95 && this.los(h.x, C.hunterEye, h.z, q.x, q.floorY + this.height(q) * 0.6, q.z)) { if (!seen || dh < d) d = dh; seen = true; }
+    }
     b.seen = seen;
     if (b.state === 'hidden') {
       b.wait -= dt;
-      if (seen && ((d < 5 && p.vis > 0.3) || d < 2.6)) { this.botStance('walk'); this.botPick(true); }
-      else if (b.wait <= 0 && !seen && d > 5) this.botPick(false);
-      return { f: 0, yaw: p.yaw };
+      if (seen && ((d < 5 && q.vis > 0.3) || d < 2.6)) { this.botStance(q, 'walk'); this.botPick(q, true); }
+      else if (b.wait <= 0 && !seen && d > 5) this.botPick(q, false);
+      return { f: 0, yaw: q.yaw };
     }
-    if (!b.path || !b.path.length) { this.botStance(b.spot.st); b.state = 'hidden'; b.flee = false; b.wait = 9 + this.rng() * 16; return { f: 0, yaw: p.yaw }; }
+    if (!b.path || !b.path.length) { this.botStance(q, b.spot.st); b.state = 'hidden'; b.flee = false; b.wait = 9 + this.rng() * 16; return { f: 0, yaw: q.yaw }; }
     // 被远远看到：先僵住不动，赌自己变透明
     if (seen && d > 8 && b.freezeCd <= 0 && !b.flee && b.freeze <= 0) { b.freeze = 2.5 + this.rng() * 2.5; b.freezeCd = 9; }
-    if (b.freeze > 0) { b.freeze -= dt; if (seen && d < 6.5) { b.freeze = 0; b.flee = true; } else return { f: 0, yaw: p.yaw }; }
+    if (b.freeze > 0) { b.freeze -= dt; if (seen && d < 6.5) { b.freeze = 0; b.flee = true; } else return { f: 0, yaw: q.yaw }; }
     if (seen && d < 7) b.flee = true;
-    const t = b.path[0], tx = t.x - p.x, tz = t.z - p.z, td = Math.hypot(tx, tz);
-    if (td < 0.18) { b.path.shift(); return { f: 0, yaw: p.yaw }; }
-    if (t.last && td < 2.2 && b.spot.st !== 'walk') this.botStance(b.spot.st); else if (b.flee || (seen && d < 12)) this.botStance('walk'); else this.botStance(d < 14 && !t.last ? 'crouch' : 'walk');
+    const t = b.path[0], tx = t.x - q.x, tz = t.z - q.z, td = Math.hypot(tx, tz);
+    if (td < 0.18) { b.path.shift(); return { f: 0, yaw: q.yaw }; }
+    if (t.last && td < 2.2 && b.spot.st !== 'walk') this.botStance(q, b.spot.st); else if (b.flee || (seen && d < 12)) this.botStance(q, 'walk'); else this.botStance(q, d < 14 && !t.last ? 'crouch' : 'walk');
     // 卡住了就换个目标
-    if (Math.hypot(p.x - b.lx, p.z - b.lz) < 0.02 * dt * 60) { b.stuck += dt; if (b.stuck > 1.2) { this.botStance('walk'); this.botPick(b.flee); } } else b.stuck = 0; b.lx = p.x; b.lz = p.z;
-    return { f: 1, s: 0, run: (b.flee || (seen && d < 12)) && p.stance === 'walk', yaw: Math.atan2(-tx, -tz) };
+    if (Math.hypot(q.x - b.lx, q.z - b.lz) < 0.02 * dt * 60) { b.stuck += dt; if (b.stuck > 1.2) { this.botStance(q, 'walk'); this.botPick(q, b.flee); } } else b.stuck = 0; b.lx = q.x; b.lz = q.z;
+    return { f: 1, s: 0, run: (b.flee || (seen && d < 12)) && q.stance === 'walk', yaw: Math.atan2(-tx, -tz) };
   }
-  win(why) { this.phase = 'over'; this.result = why; this.addScore(C.scoreSurvive); this.emit('win', { why }); }
 
-  update(dt, inp) {
+  // —— 防挂机：躲藏方待太久，最近的 AI 猎人会收到提示；真人猎人在画面上看到提示圈 ——
+  updateCamp(q, dt) {
+    const c = q.camp;
+    if (Math.hypot(q.x - c.x, q.z - c.z) > C.campDist) { c.x = q.x; c.z = q.z; c.t = 0; c.level = 0; return; }
+    c.t += dt; if (c.t < C.campTime) return;
+    c.t = 0; c.level++;
+    const R = C.campHintRadius * [0.6, 0.25, 0.08][Math.min(2, c.level - 1)], a = this.rng() * TAU, r = this.rng() * R;
+    const x = clamp(q.x + Math.cos(a) * r, 1, 39), z = clamp(q.z + Math.sin(a) * r, 1, 29);
+    let best = null, bd = 1e9; for (const h of this.hunters) { if (h.ctrl !== 'ai' || (h.state !== 'patrol' && h.state !== 'investigate')) continue; const d = Math.hypot(h.x - q.x, h.z - q.z); if (d < bd) { bd = d; best = h; } }
+    if (best) this.investigate(best, x, z, 'camp', q.id);
+    if (best || this.hunters.some((h) => h.ctrl === 'human')) this.emit('campHint', { hid: q.id, level: c.level, x, z, r: Math.max(R, 0.8) });
+  }
+
+  // inputs：{ 角色 key: 输入 }。单机时也可以直接传一个输入对象，给第一个真人用。
+  // 输入：{ f, s, run, yaw, pitch, fire, stance: 'crouch' | 'prone' | 'stand' }
+  update(dt, inputs = {}) {
     if (this.phase === 'menu' || this.phase === 'over') { if (this.phase === 'over') this.updateShots(dt); return; }
+    if ('yaw' in inputs || 'f' in inputs || 'fire' in inputs || 'stance' in inputs) { const me = this.firstHuman(); inputs = me ? { [me.key]: inputs } : {}; }
     dt = Math.min(dt, 0.05); this.time += dt;
-    if (this.mode === 'hunter') { this.updatePlayer(dt, this.botInput(dt)); this.updateMe(dt, inp); } else this.updatePlayer(dt, inp);
+    for (const q of this.hiders) {
+      if (q.caught) continue;
+      this.updateHider(q, dt, q.bot ? this.botInput(q, dt) : inputs[q.key] || { yaw: q.yaw, pitch: q.pitch });
+    }
+    for (const h of this.hunters) if (h.ctrl === 'human') this.updateHumanHunter(h, dt, inputs[h.key] || { yaw: h.yaw, pitch: h.pitch });
     if (this.phase === 'hide') {
       this.hideLeft -= dt;
-      if (this.hideLeft <= 0) { this.phase = 'seek'; for (const h of this.hunters) this.nextPatrol(h); this.emit('seek'); }
+      if (this.hideLeft <= 0) { this.phase = 'seek'; for (const h of this.hunters) if (h.ctrl === 'ai') this.nextPatrol(h); else h.state = 'human'; this.emit('seek'); }
     } else {
-      this.timeLeft -= dt; this.addScore(C.scorePerSecond * dt);
-      // 防挂机
-      const c = this.camp, p = this.player;
-      if (Math.hypot(p.x - c.x, p.z - c.z) > C.campDist) { c.x = p.x; c.z = p.z; c.t = 0; c.level = 0; }
-      else { c.t += dt; if (c.t >= C.campTime) { c.t = 0; c.level = (c.level || 0) + 1; const a = this.rng() * TAU, r = this.rng() * C.campHintRadius * [0.6, 0.25, 0.08][Math.min(2, c.level - 1)]; let best = null; for (const h of this.hunters) if ((h.state === 'patrol' || h.state === 'investigate') && (!best || h.dist < best.dist)) best = h; if (best) { this.investigate(best, clamp(p.x + Math.cos(a) * r, 1, 39), clamp(p.z + Math.sin(a) * r, 1, 29), 'camp'); this.emit('campHint', { level: c.level }); } } }
+      this.timeLeft -= dt;
+      for (const q of this.alive()) { this.addScore(q, C.scorePerSecond * dt); this.updateCamp(q, dt); }
     }
-    for (const h of this.hunters) this.updateHunter(h, dt);
+    for (const h of this.hunters) if (h.ctrl === 'ai') this.updateHunter(h, dt);
     this.updateShots(dt);
     if (this.phase === 'seek') {
-      if (this.mode === 'hunter') { if (this.timeLeft <= 0) this.lose('timeout'); else if (this.me.ammo <= 0 && this.shots.length === 0) this.lose('noammo'); }
-      else if (this.timeLeft <= 0) this.win('survived');
-      else if (this.pendingPaintOut && this.shots.length === 0) this.win('paintout');
+      if (this.timeLeft <= 0) this.end('hiders', 'timeout');
+      else if (this.pendingPaintOut && this.shots.length === 0) this.end('hiders', 'paintout');
     }
   }
 }

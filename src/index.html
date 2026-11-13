@@ -56,6 +56,21 @@ html,body{margin:0;height:100%;overflow:hidden;background:#bfe6ff;color:var(--in
 #hud.danger #bottom{animation:shake .35s infinite}
 body:not(.hunter) .honly{display:none!important}
 body.hunter #radarWrap,body.hunter #mirror,body.hunter #bottom,body.hunter #pills,body.hunter #scoreBox{display:none}
+#left{padding:2px 14px;font-size:17px;font-weight:800;white-space:nowrap}
+#left:empty{display:none}
+body:not(.spec) .sonly{display:none!important}
+body.spec #radarWrap,body.spec #mirror,body.spec #bottom,body.spec #cross,body.spec #hint:not(.sonly),body.spec #myPill{display:none!important}
+.setup{display:flex;flex-direction:column;align-items:center;gap:12px;margin:4px 0 18px}
+.seg{display:flex;border:3px solid var(--ink);border-radius:999px;overflow:hidden;box-shadow:0 4px 0 rgba(58,53,80,.28)}
+.seg button{font-family:"ZCOOL KuaiLe","Baloo 2",sans-serif;font-size:22px;color:var(--ink);background:#fff;border:0;padding:4px 26px;cursor:pointer}
+.seg button+button{border-left:3px solid var(--ink)}
+.seg button.on{background:var(--mint)}
+.steppers{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+.stp{display:flex;align-items:center;gap:8px;background:#fff;border:2.5px solid var(--ink);border-radius:16px;padding:4px 8px 4px 14px;font-size:17px;font-weight:800}
+.stp button{width:32px;height:32px;border-radius:50%;border:2.5px solid var(--ink);background:var(--yellow);font:800 20px/1 system-ui,sans-serif;color:var(--ink);cursor:pointer;padding:0}
+.stp button:disabled{opacity:.35;cursor:default}
+.stp b{min-width:22px;text-align:center;font-size:22px;font-variant-numeric:tabular-nums}
+#setupNote{margin:0;font-size:15px;opacity:.8}
 #cross{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;border:3.5px solid #fff;border-radius:50%;box-shadow:0 0 0 2.5px var(--ink),inset 0 0 0 2.5px var(--ink)}
 #cross::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px;border-radius:50%;background:var(--ink)}
 #myPill{font-size:22px}
@@ -107,7 +122,7 @@ kbd{font-family:inherit;font-weight:800;background:#fff;border:2.5px solid var(-
 <body>
 <canvas id="gl"></canvas>
 <div id="hud">
-  <div id="top"><div id="pills"></div><div id="myPill" class="pill honly"><i style="background:#ff8a3d"></i><b id="myAmmo">10</b></div><div id="timer" class="card">3:00</div><div id="scoreBox" class="card"><span id="score">0</span><small>分</small></div></div>
+  <div id="top"><div id="pills"></div><div id="myPill" class="pill honly"><i style="background:#ff8a3d"></i><b id="myAmmo">10</b></div><div id="timer" class="card">3:00</div><div id="left" class="card"></div><div id="scoreBox" class="card"><span id="score">0</span><small>分</small></div></div>
   <div id="radarWrap"><canvas id="radar"></canvas></div>
   <div id="mirror"><span>猎人眼中的你</span></div>
   <div id="bottom" class="card">
@@ -116,6 +131,7 @@ kbd{font-family:inherit;font-weight:800;background:#fff;border:2.5px solid var(-
     <div id="noiseBox"><div id="noiseRing"><div id="noise"></div></div><span>噪音</span></div>
   </div>
   <div id="cross" class="honly"></div>
+  <div id="specHint" class="card sonly" style="position:absolute;bottom:22px;left:50%;transform:translateX(-50%);padding:6px 18px;font-size:15px;font-weight:600;white-space:nowrap">你被喷中了，正在旁观 · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 飞行 · <kbd>Shift</kbd> 加速 · <kbd>空格</kbd> / <kbd>C</kbd> 升降</div>
   <div id="hint" class="card honly">找出躲起来的小家伙并喷中它 · 点击鼠标或按 <kbd>F</kbd> 发射 · <kbd>Shift</kbd> 跑</div>
   <div id="toasts"></div>
   <div id="banner"></div>
@@ -137,7 +153,15 @@ kbd{font-family:inherit;font-weight:800;background:#fff;border:2.5px solid var(-
       <div><kbd>Shift</kbd> 跑（很吵，完全现形）</div><div><kbd>C</kbd> 蹲下 / 站起</div>
       <div><kbd>Z</kbd> 匍匐 / 站起（能钻床底）</div><div><kbd>`</kbd> 调试面板 <kbd>M</kbd> 静音</div>
     </div>
-    <div class="btns"><button id="startBtn" class="btn">当躲藏方</button><button id="hunterBtn" class="btn alt">当猎人（看 AI 躲）</button></div>
+    <div class="setup">
+      <div class="seg" id="roleSeg"><button data-role="hider" class="on">当躲藏方</button><button data-role="hunter">当猎人</button></div>
+      <div class="steppers">
+        <div class="stp"><span>猎人</span><button data-k="hunters" data-d="-1">−</button><b id="nHunters">2</b><button data-k="hunters" data-d="1">+</button></div>
+        <div class="stp"><span>躲藏方</span><button data-k="hiders" data-d="-1">−</button><b id="nHiders">1</b><button data-k="hiders" data-d="1">+</button></div>
+      </div>
+      <p id="setupNote"></p>
+    </div>
+    <div class="btns"><button id="startBtn" class="btn">开始</button></div>
   </div>
 </div>
 <div id="end" class="screen">
