@@ -5,7 +5,7 @@
   "description": "Jelly Fade & Seek：静止变透明、移动就现形的多人躲猫猫",
   "scripts": {
     "build": "node build.mjs game slice",
-    "test": "node test/logic.mjs && node test/bot.mjs"
+    "test": "node test/logic.mjs && node test/bot.mjs && node test/net.mjs"
   },
   "dependencies": {
     "esbuild": "^0.28.2",

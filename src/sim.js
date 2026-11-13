@@ -172,7 +172,7 @@ export class Game {
     this.hiders = this.setup.hiders.map((s, i) => this.newHider(i, s));
     this.hunters = this.setup.hunters.map((s, i) => this.newHunter(i, s, this.hiders.length));
     this.hideLeft = this.hiders.some((q) => q.ctrl === 'human') ? C.hideTime : C.hideTimeBots;
-    this.shots = []; this.pendingPaintOut = false;
+    this.shots = []; this.shotSeq = 0; this.pendingPaintOut = false;
     for (const q of this.hiders) if (q.bot) this.botPick(q, false);
   }
   // setup：lineup() 的结果；也接受 'hider' / 'hunter'，等于原来的两种单机模式
@@ -291,14 +291,15 @@ export class Game {
   goTo(h, x, z) { h.path = this.nav.path(h.x, h.z, x, z); h.repath = 0.3; return !!h.path; }
   investigate(h, x, z, why, hid = -1) { if (h.state === 'chase' || h.state === 'wait' || h.state === 'empty') return; h.state = 'investigate'; h.thorough = why === 'camp'; h.timer = C.investigateLookTime; h.arrived = false; this.goTo(h, x, z); this.emit('investigate', { id: h.id, why, hid }); }
   nextPatrol(h) { const n = this.world.patrol.length; h.pi = (h.pi + h.dir + n) % n; const t = this.world.patrol[h.pi]; h.state = 'patrol'; h.arrived = false; h.timer = C.lookAroundTime; if (!this.goTo(h, t.x, t.z)) h.path = []; }
+  // 颜料弹的完整参数都在 fire 事件里，联机时客户端按它自己算弹道
   shoot(h, ox, oy, oz, vx, vy, vz, probe) {
-    h.ammo--; h.fired++;
-    this.shots.push({ x: ox, y: oy, z: oz, vx, vy, vz, color: h.color, owner: h.id, life: 4, near: [] });
-    this.emit('fire', { id: h.id, x: ox, y: oy, z: oz, probe: !!probe, ammo: h.ammo });
+    const sid = ++this.shotSeq;
+    this.shots.push({ sid, x: ox, y: oy, z: oz, vx, vy, vz, color: h.color, owner: h.id, life: 4, near: [] });
+    this.emit('fire', { id: h.id, sid, x: ox, y: oy, z: oz, vx, vy, vz, color: h.color, probe: !!probe, ammo: h.ammo });
     if (this.hunters.every((k) => k.ammo <= 0)) this.pendingPaintOut = true;
   }
   fire(h, tx, ty, tz, probe) {
-    if (h.ammo <= 0) return; h.cd = C.fireCooldown;
+    if (h.ammo <= 0) return; h.ammo--; h.fired++; h.cd = C.fireCooldown;
     const ox = h.x + Math.cos(h.ang) * 0.45, oz = h.z + Math.sin(h.ang) * 0.45, oy = h.bend ? 0.45 : 1.05;
     const dx = tx - ox, dz = tz - oz, d = Math.max(0.5, Math.hypot(dx, dz)), t = d / C.paintSpeed;
     this.shoot(h, ox, oy, oz, dx / d * C.paintSpeed, (ty - oy) / t + 0.5 * C.paintGravity * t, dz / d * C.paintSpeed, probe);
@@ -391,30 +392,31 @@ export class Game {
 
   // —— 真人猎人 ——
   // 移动：只依赖自己的输入，联机时本机预测也用这一段
+  // 返回 null，或者开枪时颜料弹的出发点和速度 [x, y, z, vx, vy, vz]（弹药和冷却已经扣好）
   stepHunter(h, dt, inp) {
-    h.yaw = inp.yaw ?? h.yaw; h.pitch = inp.pitch || 0; h.ang = angOfYaw(h.yaw);
-    if (this.phase !== 'seek') { h.moving = false; h.speed = 0; return; }
+    h.cd -= dt; h.yaw = inp.yaw ?? h.yaw; h.pitch = inp.pitch || 0; h.ang = angOfYaw(h.yaw);
+    if (this.phase !== 'seek') { h.moving = false; h.speed = 0; return null; }
     let f = inp.f || 0, s = inp.s || 0; const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
     h.running = !!inp.run; const sp = h.running ? C.hunterChaseSpeed : C.hunterPatrolSpeed, ox = h.x, oz = h.z;
     const fx = -Math.sin(h.yaw), fz = -Math.cos(h.yaw), rx = Math.cos(h.yaw), rz = -Math.sin(h.yaw);
     if (len > 0.05) { const [nx, nz] = this.resolve(h.x + (fx * f + rx * s) * sp * dt, h.z + (fz * f + rz * s) * sp * dt, 1.6, 0.35, this.hunterSolids); h.x = nx; h.z = nz; }
     h.moving = Math.hypot(h.x - ox, h.z - oz) > sp * dt * 0.2; h.speed = h.moving ? sp : 0; h.hop += dt * h.speed * 2.2;
+    if (!inp.fire || h.cd > 0 || h.ammo <= 0) return null;
+    h.cd = C.fireCooldown * 0.6; h.ammo--; h.fired++;
+    const cp = Math.cos(h.pitch), dx = fx * cp, dy = Math.sin(h.pitch), dz = fz * cp;
+    return [h.x + dx * 0.4 + rx * 0.18, C.hunterEye - 0.16 + dy * 0.4, h.z + dz * 0.4 + rz * 0.18, dx * C.paintSpeed, dy * C.paintSpeed + 0.6, dz * C.paintSpeed];
   }
   updateHumanHunter(h, dt, inp) {
-    h.cd -= dt; this.stepHunter(h, dt, inp);
+    const shot = this.stepHunter(h, dt, inp);
     if (this.phase !== 'seek') return;
     if (h.state === 'wait') h.state = 'human';
     this.sense(h); this.scoreNear(h, dt);
-    if (inp.fire && h.cd <= 0 && h.ammo > 0) {
-      h.cd = C.fireCooldown * 0.6; const fx = -Math.sin(h.yaw), fz = -Math.cos(h.yaw), rx = Math.cos(h.yaw), rz = -Math.sin(h.yaw);
-      const cp = Math.cos(h.pitch), dx = fx * cp, dy = Math.sin(h.pitch), dz = fz * cp;
-      this.shoot(h, h.x + dx * 0.4 + rx * 0.18, C.hunterEye - 0.16 + dy * 0.4, h.z + dz * 0.4 + rz * 0.18, dx * C.paintSpeed, dy * C.paintSpeed + 0.6, dz * C.paintSpeed);
-      if (h.ammo <= 0) { h.state = 'empty'; this.emit('empty', { id: h.id }); }
-    }
+    if (shot) { this.shoot(h, ...shot); if (h.ammo <= 0) { h.state = 'empty'; this.emit('empty', { id: h.id }); } }
   }
 
   // —— 颜料弹 ——
-  updateShots(dt) {
+  // visual：联机客户端只画弹道，碰到东西就消失，命中和溅色以房主的事件为准
+  updateShots(dt, visual = false) {
     for (const s of this.shots) {
       let left = dt;
       while (left > 0 && !s.dead) {
@@ -428,17 +430,17 @@ export class Game {
           if (pd < 1.2 && !s.near.includes(q.id)) s.near.push(q.id);
           if (pd < C.playerRadius + 0.14 && ny > q.floorY - 0.05 && ny < q.floorY + this.height(q) + 0.12 && this.phase === 'seek' && !C.invincible) { hit = q; break; }
         }
-        if (hit) { s.dead = true; this.emit('splat', { x: nx, y: ny, z: nz, nx: 0, ny: 1, nz: 0, color: s.color, onBody: true, hid: hit.id }); this.caught(hit, s); break; }
+        if (hit) { s.dead = true; if (visual) break; this.emit('splat', { x: nx, y: ny, z: nz, nx: 0, ny: 1, nz: 0, color: s.color, onBody: true, hid: hit.id, sid: s.sid, owner: s.owner }); this.caught(hit, s); break; }
         let best = null;
         for (const b of this.paintBoxes) { const r = segBox(s.x, s.y, s.z, nx, ny, nz, b); if (r && r.axis >= 0 && (!best || r.t < best.t)) best = r; }
         if (best) {
           const n = [0, 0, 0]; n[best.axis] = best.sign; s.dead = true;
-          this.emit('splat', { x: lerp(s.x, nx, best.t), y: lerp(s.y, ny, best.t), z: lerp(s.z, nz, best.t), nx: n[0], ny: n[1], nz: n[2], color: s.color });
-        } else if (ny <= 0.02) { s.dead = true; this.emit('splat', { x: nx, y: 0.02, z: nz, nx: 0, ny: 1, nz: 0, color: s.color }); }
+          if (!visual) this.emit('splat', { x: lerp(s.x, nx, best.t), y: lerp(s.y, ny, best.t), z: lerp(s.z, nz, best.t), nx: n[0], ny: n[1], nz: n[2], color: s.color, sid: s.sid, owner: s.owner });
+        } else if (ny <= 0.02) { s.dead = true; if (!visual) this.emit('splat', { x: nx, y: 0.02, z: nz, nx: 0, ny: 1, nz: 0, color: s.color, sid: s.sid, owner: s.owner }); }
         s.x = nx; s.y = ny; s.z = nz;
       }
       s.life -= dt; if (s.life <= 0 || s.x < -5 || s.z < -5 || s.x > 45 || s.z > 35) s.dead = true;
-      if (s.dead && this.phase === 'seek') for (const id of s.near) { const q = this.hiders[id]; if (!q.caught) { q.stats.shotsDodged++; this.emit('dodged', { hid: id }); } }
+      if (s.dead && !visual && this.phase === 'seek') for (const id of s.near) { const q = this.hiders[id]; if (!q.caught) { q.stats.shotsDodged++; this.emit('dodged', { hid: id }); } }
     }
     this.shots = this.shots.filter((s) => !s.dead);
   }
@@ -511,6 +513,13 @@ export class Game {
     if (best || this.hunters.some((h) => h.ctrl === 'human')) this.emit('campHint', { hid: q.id, level: c.level, x, z, r: Math.max(R, 0.8) });
   }
 
+  // 联机：远端玩家的输入由房主按客户端当时的帧时长逐条重放，不走 update() 里的步进
+  applyRemote(key, dt, inp) {
+    if (this.phase !== 'hide' && this.phase !== 'seek') return;
+    const a = this.actor(key); if (!a) return; dt = Math.min(dt, 0.05);
+    if (a.kind === 'hider') { if (!a.caught) this.updateHider(a, dt, inp); } else this.updateHumanHunter(a, dt, inp);
+  }
+
   // inputs：{ 角色 key: 输入 }。单机时也可以直接传一个输入对象，给第一个真人用。
   // 输入：{ f, s, run, yaw, pitch, fire, stance: 'crouch' | 'prone' | 'stand' }
   update(dt, inputs = {}) {
@@ -518,10 +527,10 @@ export class Game {
     if ('yaw' in inputs || 'f' in inputs || 'fire' in inputs || 'stance' in inputs) { const me = this.firstHuman(); inputs = me ? { [me.key]: inputs } : {}; }
     dt = Math.min(dt, 0.05); this.time += dt;
     for (const q of this.hiders) {
-      if (q.caught) continue;
+      if (q.caught || q.remote) continue;
       this.updateHider(q, dt, q.bot ? this.botInput(q, dt) : inputs[q.key] || { yaw: q.yaw, pitch: q.pitch });
     }
-    for (const h of this.hunters) if (h.ctrl === 'human') this.updateHumanHunter(h, dt, inputs[h.key] || { yaw: h.yaw, pitch: h.pitch });
+    for (const h of this.hunters) if (h.ctrl === 'human' && !h.remote) this.updateHumanHunter(h, dt, inputs[h.key] || { yaw: h.yaw, pitch: h.pitch });
     if (this.phase === 'hide') {
       this.hideLeft -= dt;
       if (this.hideLeft <= 0) { this.phase = 'seek'; for (const h of this.hunters) if (h.ctrl === 'ai') this.nextPatrol(h); else h.state = 'human'; this.emit('seek'); }

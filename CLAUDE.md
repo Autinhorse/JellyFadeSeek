@@ -16,8 +16,10 @@
 ```
 npm install
 npm run build        # 生成 dist/index.html（游戏）和 dist/slice/index.html（画面样板）
-npm test             # 逻辑测试，test/logic.mjs 应有 29 个 PASS，test/bot.mjs 4 个
+npm test             # 逻辑测试：test/logic.mjs 29 个 PASS，test/bot.mjs 4 个，test/net.mjs 10 个
 ```
+
+- 本机联机测试：构建后开两个标签页，一个打开 `dist/index.html#net=host`，另一个打开 `dist/index.html#net=join&role=hunter`（可加 `&lag=50` 单程延迟毫秒、`&jit=15`、`&loss=5` 丢包百分比，加 `&hooks` 暴露测试钩子）。两边通过 BroadcastChannel 互连，在房主那边点开始。
 
 - 构建产物是**单个自包含 HTML**：esbuild 把 `src/main.js` 打成 IIFE，替换进 `src/index.html` 里的 `/*__JS__*/`。双击就能玩。
 - `prototype/game.html`、`prototype/slice.html` 是交接时已经构建好的版本，可以直接打开对照。

@@ -4,13 +4,20 @@ import { Game, lineup, MAX_HIDERS, MAX_HUNTERS } from './sim.js';
 import { View } from './render.js';
 import { Radar, Hud, DebugPanel } from './ui.js';
 import { Sfx } from './audio.js';
+import { NetHost } from './net/host.js';
+import { NetClient } from './net/client.js';
+import { BcNet } from './net/bc.js';
 
 const $ = (id) => document.getElementById(id);
 const hexs = (c) => '#' + c.toString(16).padStart(6, '0');
 const world = buildWorld(), game = new Game(world), canvas = $('gl');
 const view = new View(canvas, world, game), radar = new Radar($('radar'), game), hud = new Hud(game), sfx = new Sfx();
-const debug = new DebugPanel();
-const TEST = location.hash === '#test';
+const TEST = location.hash === '#test'; // 测试模式：主循环由脚本一帧帧驱动
+const HOOKS = TEST || new URLSearchParams(location.hash.slice(1)).has('hooks'); // 只暴露测试钩子，主循环照常跑
+// 本机联机测试：两个标签页，一个 #net=host，另一个 #net=join&role=hunter（可加 &lag=50 单程延迟毫秒、&jit=15、&loss=5 丢包百分比）
+const NET = (() => { const h = new URLSearchParams(location.hash.slice(1)); const m = h.get('net'); if (m !== 'host' && m !== 'join') return null; return { mode: m, role: h.get('role') === 'hunter' ? 'hunter' : 'hider', lat: (+h.get('lag') || 50) / 1000, jitter: (+h.get('jit') || 15) / 1000, loss: (+h.get('loss') || 0) / 100 }; })();
+let host = null, client = null, bc = null;
+const debug = new DebugPanel((path, v) => { if (host) host.sendConfig(path, v); });
 
 // 本机控制的角色。菜单时是 0 号躲藏方（相机停在后院看房子）
 let me = game.hiders[0]; view.local = hud.local = me;
@@ -71,15 +78,33 @@ for (const b of document.querySelectorAll('.stp button')) b.addEventListener('cl
 drawSetup();
 
 let lastSetup = null;
+// 联机房主：把连上的客户端按他们想要的身份放进阵容，人数不够就加
+function netSetup() {
+  const n = pick[pick.role], peers = [...host.peers.values()];
+  const want = { hiders: n.hiders, hunters: n.hunters }; const mine = pick.role === 'hider' ? 'hiders' : 'hunters'; const used = { hiders: 0, hunters: 0 }; used[mine] = 1;
+  for (const p of peers) used[p.info.role === 'hunter' ? 'hunters' : 'hiders']++;
+  const setup = lineup(pick.role, Math.max(want.hunters, used.hunters), Math.max(want.hiders, used.hiders));
+  setup[mine][0].uid = host.uid; const next = { hiders: mine === 'hiders' ? 1 : 0, hunters: mine === 'hunters' ? 1 : 0 };
+  for (const p of peers) { const t = p.info.role === 'hunter' ? 'hunters' : 'hiders'; setup[t][next[t]++] = { ctrl: 'human', uid: p.uid, name: p.info.name || '' }; }
+  return setup;
+}
 function startGame(setup) {
+  if (client) return; // 客户端等房主开局
   if (typeof setup === 'string') { pick.role = setup; drawSetup(); setup = null; } // 测试钩子：start('hider') / start('hunter')
-  if (!setup) { const n = pick[pick.role]; setup = lineup(pick.role, n.hunters, n.hiders); }
-  lastSetup = setup; sfx.init(); sfx.resume(); game.start(setup);
-  me = game.firstHuman(); view.local = hud.local = me; spec = view.spec = null; specT = 0; document.body.classList.remove('spec');
+  if (host) setup = netSetup(); else if (!setup) { const n = pick[pick.role]; setup = lineup(pick.role, n.hunters, n.hiders); }
+  lastSetup = setup; sfx.init(); sfx.resume();
+  if (host) { host.begin(setup); me = game.actor(host.localKey); } else { game.start(setup); me = game.firstHuman(); }
+  enterRound();
+}
+// 开局后的界面切换（单机、房主、客户端共用）
+function enterRound() {
+  view.local = hud.local = me; spec = view.spec = null; specT = 0; document.body.classList.remove('spec');
   document.body.classList.toggle('hunter', isHunter()); hud.buildPills(); view.resetRound(); hud.clearSplat(); endShown = false; paused = false;
   yaw = isHunter() ? 0 : world.spawn.yaw; pitch = 0; $('menu').classList.remove('show'); $('end').classList.remove('show'); $('pause').classList.remove('show'); $('hud').classList.add('show');
-  hopPhase.length = 0; botStep.length = 0; tryLock();
+  hopPhase.length = 0; botStep.length = 0;
+  if (client) { if (!locked && !dragLook) hud.toast('点一下画面开始', 'info'); } else tryLock(); // 客户端是收到消息开局的，浏览器不允许这时锁定鼠标
 }
+
 $('startBtn').addEventListener('click', () => startGame()); $('againBtn').addEventListener('click', () => startGame(lastSetup));
 $('menuBtn').addEventListener('click', () => { $('end').classList.remove('show'); $('hud').classList.remove('show'); hud.clearSplat(); $('menu').classList.add('show'); });
 
@@ -154,7 +179,9 @@ function frame(now) {
   if (spec) { input.f = input.s = 0; input.run = false; } else { input.f = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0); input.s = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0); input.run = !!(keys.ShiftLeft || keys.ShiftRight); }
   input.yaw = yaw; input.pitch = pitch; input.fire = fireQ; fireQ = false; input.stance = stanceQ; stanceQ = null;
   if (TEST && window.__input) Object.assign(input, window.__input);
-  if (!paused) game.update(dt, { [me.key]: input });
+  if (host) host.frame(dt, paused ? { yaw, pitch } : input); // 联机时暂停只停自己的输入，模拟照常跑
+  else if (client) client.frame(dt, paused ? { yaw, pitch } : input);
+  else if (!paused) game.update(dt, { [me.key]: input });
   handleEvents();
   // 自己被喷中、但这一局还没结束：过一会儿进入旁观
   if (!isHunter() && me.caught && game.phase !== 'over' && !spec) { specT += dt; if (specT > 1.7) startSpectate(); }
@@ -166,5 +193,21 @@ function frame(now) {
 }
 // 菜单背景：从后院看房子
 me.x = 20; me.z = 27.5; yaw = 0.25; pitch = 0.12; me.yaw = yaw; me.pitch = pitch;
+// —— 本机联机测试 ——
+if (NET) {
+  const tag = document.createElement('div'); tag.style.cssText = 'position:fixed;left:10px;bottom:8px;z-index:30;font:800 13px system-ui,sans-serif;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;white-space:pre'; document.body.appendChild(tag);
+  const lagText = `单程延迟 ${Math.round(NET.lat * 1000)}ms 抖动 ${Math.round(NET.jitter * 1000)}ms 丢包 ${Math.round(NET.loss * 100)}%`;
+  if (NET.mode === 'host') {
+    bc = new BcNet('host', NET); host = new NetHost(game, 'host');
+    bc.onHello = (from, info) => { if (!host.peers.has(from)) { host.addPeer(from, bc.link(from), info); hud.toast(`有人加入了（${info.role === 'hunter' ? '猎人' : '躲藏方'}）`, 'info'); } bc.hello(from, { ok: true }); };
+    setInterval(() => { tag.textContent = `联机测试 · 房主 · 已连接 ${host.peers.size} 人 · ${lagText}`; }, 500);
+  } else {
+    const id = 'c' + Math.random().toString(36).slice(2, 7); bc = new BcNet(id, NET); client = new NetClient(game, bc.link('host'), id);
+    pick.role = NET.role; drawSetup(); document.querySelector('.setup').style.display = 'none'; $('startBtn').textContent = '等房主开始…'; $('startBtn').disabled = true; $('againBtn').style.display = 'none';
+    client.onStart = (a) => { me = a || game.hiders[0]; sfx.init(); sfx.resume(); enterRound(); };
+    const hi = setInterval(() => { if (client.round) clearInterval(hi); else bc.hello('host', { role: NET.role }); }, 500);
+    setInterval(() => { const s = client.stats; tag.textContent = `联机测试 · 客户端（${NET.role === 'hunter' ? '猎人' : '躲藏方'}）· 往返 ${Math.round(client.rtt * 1000)}ms · 预测修正 ${s.corrections} 次 · ${lagText}`; }, 500);
+  }
+}
 requestAnimationFrame(frame);
-if (TEST) window.__t = { frame: (n = 1) => { for (let i = 0; i < n; i++) frame(performance.now()); }, game, view, C, lineup, start: startGame, me: () => me, step: (n, inp) => { for (let i = 0; i < n; i++) { game.update(1 / 60, { [me.key]: { ...input, ...(inp || {}) } }); handleEvents(); } }, setLook: (y, p) => { yaw = y; pitch = p; }, hud };
+if (HOOKS) window.__t = { net: () => ({ host, client, me }),  frame: (n = 1) => { for (let i = 0; i < n; i++) frame(performance.now()); }, game, view, C, lineup, start: startGame, me: () => me, step: (n, inp) => { for (let i = 0; i < n; i++) { game.update(1 / 60, { [me.key]: { ...input, ...(inp || {}) } }); handleEvents(); } }, setLook: (y, p) => { yaw = y; pitch = p; }, hud };
