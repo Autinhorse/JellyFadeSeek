@@ -21,6 +21,7 @@ npm test             # 逻辑测试：test/logic.mjs 29 个 PASS，test/bot.mjs 
 
 - 本机联机测试：构建后开两个标签页，一个打开 `dist/index.html#net=host`，另一个打开 `dist/index.html#net=join&role=hunter`（可加 `&lag=50` 单程延迟毫秒、`&jit=15`、`&loss=5` 丢包百分比，加 `&hooks` 暴露测试钩子）。两边通过 BroadcastChannel 互连，在房主那边点开始。
 
+- 发布：推送到 `main` 后，`.github/workflows/pages.yml` 自动测试、构建，并把 `dist/` 发到 GitHub Pages（https://autinhorse.github.io/JellyFadeSeek/ ，画面样板在 `/slice/`）。测试不过就不发布。
 - 构建产物是**单个自包含 HTML**：esbuild 把 `src/main.js` 打成 IIFE，替换进 `src/index.html` 里的 `/*__JS__*/`。双击就能玩。
 - `prototype/game.html`、`prototype/slice.html` 是交接时已经构建好的版本，可以直接打开对照。
 - `test/shot.mjs` 是无头浏览器截图脚本，playwright 和 Chrome 的路径用环境变量 `PW`、`CHROME` 指定（见文件开头）。页面带 `#test` 时会暴露 `window.__t`（`frame(n)`、`step(n, inp)`、`game`、`view`、`me()`、`lineup`、`start(阵容或 'hider'/'hunter')` 等）方便脚本驱动。
